@@ -2,6 +2,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ConfigError, loadConfig, validateConfig } from './config'
 import { createServer } from './server'
 import { sweepStagingAndTrash } from './utils/profile-publish'
+import { getBridge } from './utils/bridge-client'
 
 async function main(): Promise<void> {
   let cfg
@@ -23,6 +24,7 @@ async function main(): Promise<void> {
   }
 
   sweepStagingAndTrash(cfg.distDir)
+  getBridge(cfg).sweepOrphans()
 
   const server = createServer(cfg)
   const transport = new StdioServerTransport()

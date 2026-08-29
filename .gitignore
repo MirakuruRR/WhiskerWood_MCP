@@ -5,3 +5,4 @@ dist
 state
 *.log
 dumps
+bridge/WWBridge/Scripts/config.lua

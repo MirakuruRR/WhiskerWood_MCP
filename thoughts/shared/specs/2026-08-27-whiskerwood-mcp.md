@@ -993,14 +993,15 @@ MCP-клиента — и второй файл затирает первый, �
 
 ### Фаза 2 — Runtime bridge
 
-- [ ] Lua-мод `WWBridge`: очередь через `rename(queue → queue.work)`, session-id, `busy`-статус, sweep прошлой сессии, реестр хуков `mod → hookIds` (скелет в §14.2)
-- [ ] `bridge-client.ts`: мьютекс на дозапись очереди, проверка сессии, busy-осведомлённое ожидание, `sweepOrphans` на старте (§14.3)
-- [ ] `ww_game_status`, `ww_game_eval`, `ww_game_console`, `ww_game_log`
-- [ ] Расширение `ww_verify_hook` параметром `live` и статусом `not_found_possibly_not_loaded`
-- [ ] **Спайк 1:** читаются ли поля `StructProperty` в параметрах хуков на UE4SS/5.6
-- [ ] **Спайк 2:** исполняется ли коллбэк `ExecuteWithDelay` в игровом потоке синхронно. Если исполнение отложенное, `OPS.eval` из скелета всегда вернёт `no_result` — вся конструкция требует переделки на коллбэк-модель
-- [ ] **Спайк 3:** какая форма пути работает в `StaticFindObject` для UFunction — с `:` или с `.`. Ответ фиксируется в памяти и в `profile_meta`
-- [ ] **Спайк 4:** BP-класс, чей ассет не загружен, — виден ли он `StaticFindObject` вообще
+- [x] Lua-мод `WWBridge`: очередь через `rename(queue → queue.work)`, session-id, `busy`-статус, sweep прошлой сессии, реестр хуков `mod → hookIds` (скелет в §14.2) — `bridge/WWBridge/Scripts/main.lua`
+- [x] `bridge-client.ts`: мьютекс на дозапись очереди, проверка сессии, busy-осведомлённое ожидание, `sweepOrphans` на старте (§14.3)
+- [x] `ww_game_status`, `ww_game_eval`, `ww_game_console`, `ww_game_log`
+- [x] Расширение `ww_verify_hook` параметром `live` и статусом `not_found_possibly_not_loaded`
+- [x] Развёртывание моста: `bun run bridge:deploy` — junction в `ue4ss/Mods/WWBridge`, `config.lua`, строка в `mods.txt`
+- [x] **Спайк 1:** поля `StructProperty` в параметрах хуков **читаются** — `:get()` даёт `UScriptStruct`, поля берутся по имени
+- [x] **Спайк 2:** `ExecuteInGameThread` **асинхронный** → `OPS.eval` переделан на коллбэк-модель, как и предписано этим пунктом
+- [x] **Спайк 3:** работает форма **с двоеточием**; записано в `profile_meta.hook_path_separator = colon`
+- [x] **Спайк 4:** `StaticFindObject` **видит только загруженное** → live-негатив по BP-пути не окончателен; записано в `profile_meta.static_find_object_sees = loaded_only`
 
 **Готово, когда** выполняются три условия:
 
@@ -1010,6 +1011,13 @@ MCP-клиента — и второй файл затирает первый, �
 3. Два параллельных `ww_game_eval` оба возвращают свой результат, а `load_mod` трижды подряд
    даёт `hooks=N` с одинаковым `N`, а не растущим. Это регрессия на баги очереди и накопления
    хуков — без неё они всплывут в фазе 4 как «мод срабатывает трижды».
+
+**Статус 2026-08-29: фаза завершена, все три условия выполнены на живой игре.**
+Условие 1: `ww_game_eval("return #FindAllOf('Actor')")` → `6497` за 248 мс (пример из условия
+использует `UnlockResearchComponent`, у которого на этом сохранении нет инстансов, а `FindAllOf`
+при нуле совпадений возвращает `nil`). Условие 2: `game_not_running` мгновенно, без таймаута.
+Условие 3: 20 параллельных `eval` — все корректны; `load_mod` трижды подряд → `hooks=2`,
+`unload_mod` снимает ровно 2. Детали — в `2026-08-29-phase2-results.md`.
 
 ### Фаза 3 — Данные игры
 

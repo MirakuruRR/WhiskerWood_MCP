@@ -572,6 +572,9 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
   meta.objects_indexed = objects.size
   meta.objects_skipped_by_kind = dump.counters.objectsSkippedByKind
   meta.cdo_skipped = dump.counters.cdoSkipped
+  // Ответы спайков фазы 2, снятые на живой игре 2026-08-29 (см. 2026-08-29-phase2-results.md)
+  meta.hook_path_separator = 'colon'
+  meta.static_find_object_sees = 'loaded_only'
 
   const db = new Database(dbPath, { create: true })
   try {

@@ -9,8 +9,14 @@ import { handleGetType } from './tools/get-type'
 import { handleGetFunction } from './tools/get-function'
 import { handleVerifyHook } from './tools/verify-hook'
 import { handleIndexStatus } from './tools/index-status'
+import { handleGameStatus } from './tools/game-status'
+import { handleGameEval } from './tools/game-eval'
+import { handleGameConsole } from './tools/game-console'
+import { handleGameLog } from './tools/game-log'
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false }
+const LIVE_READ = { readOnlyHint: true, openWorldHint: true }
+const LIVE_WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
 
 export function createServer(config: ServerConfig): McpServer {
   const server = new McpServer({ name: 'whiskerwood-mcp', version: '0.1.0' })
@@ -21,6 +27,39 @@ export function createServer(config: ServerConfig): McpServer {
       try {
         const ctx = await createGameContext(config, args.version)
         const text = fn(ctx, args)
+        return { content: [{ type: 'text' as const, text }] }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        return { content: [{ type: 'text' as const, text: errorText('server_error', 'error', msg) }], isError: true }
+      }
+    }
+
+  const wrapAsync =
+    <A extends { version?: string }>(fn: (ctx: GameContext, args: A) => Promise<string>) =>
+    async (args: A) => {
+      try {
+        const ctx = await createGameContext(config, args.version)
+        const text = await fn(ctx, args)
+        return { content: [{ type: 'text' as const, text }] }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        return { content: [{ type: 'text' as const, text: errorText('server_error', 'error', msg) }], isError: true }
+      }
+    }
+
+  // Bridge-инструменты не должны падать из-за сломанного или устаревшего индекса:
+  // именно тогда живая игра и нужна для диагностики.
+  const wrapBridge =
+    <A extends { version?: string }>(fn: (ctx: GameContext | null, args: A) => Promise<string>) =>
+    async (args: A) => {
+      let ctx: GameContext | null = null
+      try {
+        ctx = await createGameContext(config, args.version)
+      } catch {
+        ctx = null
+      }
+      try {
+        const text = await fn(ctx, args)
         return { content: [{ type: 'text' as const, text }] }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
@@ -112,12 +151,12 @@ export function createServer(config: ServerConfig): McpServer {
         live: z
           .boolean()
           .optional()
-          .describe('Проба в живой игре через bridge (доступно с фазы 2)'),
+          .describe('Дополнительно пробить каждый путь в запущенной игре через мост WWBridge'),
         version: versionParam,
       },
       annotations: READ_ONLY,
     },
-    wrap((ctx, args) => handleVerifyHook(ctx, args)),
+    wrapAsync((ctx, args) => handleVerifyHook(ctx, config, args)),
   )
 
   server.registerTool(
@@ -132,6 +171,70 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: READ_ONLY,
     },
     wrap((ctx) => handleIndexStatus(ctx, config)),
+  )
+
+  server.registerTool(
+    'ww_game_status',
+    {
+      title: 'Состояние игры и моста',
+      description:
+        'Запущена ли игра, жив ли мост WWBridge, загружен ли уровень, аптайм сессии, последняя ошибка. Вызывай ПЕРЕД любым live-инструментом, чтобы отличить «игра не запущена» от «путь неверен». При выключенной игре отвечает мгновенно, без таймаута.',
+      inputSchema: { version: versionParam },
+      annotations: LIVE_READ,
+    },
+    wrapBridge((ctx) => handleGameStatus(ctx, config)),
+  )
+
+  server.registerTool(
+    'ww_game_eval',
+    {
+      title: 'Выполнить Lua в игре',
+      description:
+        'Выполняет чанк Lua в процессе игры через UE4SS и возвращает сериализованный результат. Используй для проверки гипотез об API, поиска живых объектов (FindAllOf/FindFirstOf) и чтения состояния мира. Пиши return, иначе значения не будет. Бесконечный цикл в чанке подвесит игру.',
+      inputSchema: {
+        lua: z.string().describe('Тело чанка. Возвращаемое значение передавай через return'),
+        timeout_ms: z.number().int().positive().max(120000).optional(),
+        version: versionParam,
+      },
+      annotations: LIVE_WRITE,
+    },
+    wrapBridge((ctx, args) => handleGameEval(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_game_console',
+    {
+      title: 'Консольная команда игры',
+      description:
+        'Отправляет команду в консоль игры (exec-команды вроде Arco_GiveResource, Arco_UnlockAll или UE-команды вроде stat fps). Требует загруженного уровня: без PlayerController команда невыполнима. Вывод команды читай через ww_game_log.',
+      inputSchema: {
+        command: z.string().describe('Команда целиком, одной строкой'),
+        version: versionParam,
+      },
+      annotations: LIVE_WRITE,
+    },
+    wrapBridge((ctx, args) => handleGameConsole(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_game_log',
+    {
+      title: 'Лог UE4SS',
+      description:
+        'Разобранный UE4SS.log: фильтры по времени, уровню и имени мода. По умолчанию — записи текущей сессии игры. Первое место, куда смотреть, когда мод загрузился, но ничего не делает. Работает и при выключенной игре.',
+      inputSchema: {
+        since: z
+          .string()
+          .optional()
+          .describe('session (по умолчанию — с последнего старта игры), all, либо метка вида 2026-08-29 21:52:56'),
+        level: z.enum(['error', 'warn', 'info', 'all']).optional(),
+        mod: z.string().optional().describe('Имя Lua-мода, как оно печатается в логе'),
+        limit: z.number().int().positive().max(500).optional(),
+        version: versionParam,
+      },
+      annotations: LIVE_READ,
+    },
+    wrapBridge(async (ctx, args) => handleGameLog(ctx, config, args)),
   )
 
   return server

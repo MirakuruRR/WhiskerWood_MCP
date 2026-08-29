@@ -50,6 +50,21 @@ await call('ww_get_type', { path: 'CoreUObject.EAutomationEventType' })
 await call('ww_find_symbol', { pattern: 'NotificationBoard', version: '9.9.9' })
 await call('ww_find_symbol', { pattern: 'ProblemIndicator' })
 
+await call('ww_game_status', {})
+await call('ww_game_log', { level: 'error', limit: 10 })
+await call('ww_game_log', { mod: 'AutoDump', limit: 8 })
+await call('ww_game_eval', { lua: "return #FindAllOf('Actor')" })
+await call('ww_game_console', { command: 'stat fps' })
+await call('ww_verify_hook', {
+  live: true,
+  paths: [
+    'SystemCore.UnlockResearchComponent.SetResearchTopic',
+    'SystemCore.UnlockResearchComponent.startResearch',
+    '/Game/UI/DebugUI_Components/MouseMessageBlip.MouseMessageBlip_C:Construct',
+    '/Game/UI/Nope/DoesNotExist.DoesNotExist_C:Construct',
+  ],
+})
+
 await client.close()
 await server.close()
 process.exit(0)

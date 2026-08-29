@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "setup": "bun run src/scripts/setup.ts",
-    "serve": "bun run src/stdio.ts"
+    "serve": "bun run src/stdio.ts",
+    "bridge:deploy": "bun run src/scripts/deploy-bridge.ts",
+    "bridge:spikes": "bun run src/scripts/bridge-spikes.ts",
+    "smoke": "bun run src/scripts/smoke-client.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
