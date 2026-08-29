@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "whiskerwood": {
+      "command": "bun",
+      "args": ["run", "d:/Whiskerwood_IO/WhiskerWood_MCP/src/stdio.ts"],
+      "env": {
+        "WWMCP_CONFIG": "d:/Whiskerwood_IO/WhiskerWood_MCP/wwmcp.config.json"
+      }
+    }
+  }
+}
