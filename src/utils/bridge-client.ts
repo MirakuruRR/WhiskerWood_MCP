@@ -121,12 +121,31 @@ export class BridgeClient {
 
     // Порядок обязателен: тело раньше очереди — мост не увидит id без .req.
     // Дозапись в queue под мьютексом и через append, а не через перезапись.
-    await (this.queueLock = this.queueLock.then(() => {
-      const tmp = `${this.inDir}/${id}.req.tmp`
-      writeFileSync(tmp, req)
-      renameSync(tmp, `${this.inDir}/${id}.req`)
-      appendFileSync(this.queuePath, `${id}\n`)
-    }))
+    const tmp = `${this.inDir}/${id}.req.tmp`
+    const requestPath = `${this.inDir}/${id}.req`
+    // Хвост очереди всегда остаётся fulfilled: иначе одна ошибка ФС делает
+    // queueLock rejected, и все следующие .then() обходят свою запись до
+    // перезапуска сервера. Сам текущий вызов всё равно получает свою ошибку.
+    const enqueue = this.queueLock.catch(() => undefined).then(() => {
+      try {
+        writeFileSync(tmp, req)
+        renameSync(tmp, requestPath)
+        appendFileSync(this.queuePath, `${id}\n`)
+      } catch (e) {
+        // Если запрос не попал в очередь, не оставляем неисполняемые файлы.
+        // При частично успешном append bridge увидит id без .req и просто
+        // пропустит его; запускать такой запрос после ошибки нельзя.
+        try {
+          rmSync(tmp, { force: true })
+          rmSync(requestPath, { force: true })
+        } catch {
+          /* повторная уборка сделает это при следующем старте */
+        }
+        throw e
+      }
+    })
+    this.queueLock = enqueue.catch(() => undefined)
+    await enqueue
 
     const res = `${this.outDir}/${id}.res`
     const deadline = Date.now() + timeoutMs

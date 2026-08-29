@@ -1,5 +1,5 @@
 import { realpathSync } from 'node:fs'
-import { isAbsolute, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -51,16 +51,22 @@ export class PathSandbox {
   }
 
   private resolveMissing(p: string): string {
-    const segs = segments(resolve(p))
-    for (let cut = segs.length; cut > 0; cut--) {
-      const prefix = sep + segs.slice(0, cut).join(sep)
+    // Не собираем родительский путь из сегментов: на Windows первый сегмент —
+    // "D:", и добавление sep превращает его в недопустимый "\\D:\...".
+    // Идём вверх готовыми абсолютными путями, пока не найдём существующий
+    // каталог, чтобы realpathSync раскрыл junction/symlink и для нового потомка.
+    const suffix: string[] = []
+    let probe = resolve(p)
+    while (true) {
       try {
-        const realPrefix = realpathSync(prefix)
-        return resolve(realPrefix, segs.slice(cut).join(sep))
+        const realPrefix = realpathSync(probe)
+        return suffix.length === 0 ? realPrefix : resolve(realPrefix, ...suffix)
       } catch {
-        continue
+        const parent = dirname(probe)
+        if (parent === probe) return resolve(p)
+        suffix.unshift(basename(probe))
+        probe = parent
       }
     }
-    return resolve(p)
   }
 }
