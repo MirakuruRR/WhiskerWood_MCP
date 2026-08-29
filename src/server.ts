@@ -13,6 +13,10 @@ import { handleGameStatus } from './tools/game-status'
 import { handleGameEval } from './tools/game-eval'
 import { handleGameConsole } from './tools/game-console'
 import { handleGameLog } from './tools/game-log'
+import { handleGetDataTable } from './tools/get-datatable'
+import { handleResolveLoc } from './tools/resolve-loc'
+import { handleFindAsset } from './tools/find-asset'
+import { handleExtractAsset } from './tools/extract-asset'
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false }
 const LIVE_READ = { readOnlyHint: true, openWorldHint: true }
@@ -171,6 +175,74 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: READ_ONLY,
     },
     wrap((ctx) => handleIndexStatus(ctx, config)),
+  )
+
+  server.registerTool(
+    'ww_get_datatable',
+    {
+      title: 'DataTable игры',
+      description:
+        'Баланс игры из Content/Data: без аргументов — список всех таблиц с числом строк; с name — строки таблицы; с name+row — одна строка целиком; с row_pattern — поиск ключа строки по всем таблицам. Значения приходят как JSON, разобранный CUE4Parse по .usmap. Таблицы локализации (kind=loc) читай через ww_resolve_loc.',
+      inputSchema: {
+        name: z.string().optional().describe('Имя таблицы, например TechUnlocksV2'),
+        row: z.string().optional().describe('Точное имя строки — вернёт её целиком'),
+        row_pattern: z.string().optional().describe('Часть имени строки; символ % задаёт свой шаблон'),
+        limit: z.number().int().positive().max(200).optional(),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrap((ctx, args) => handleGetDataTable(ctx, args)),
+  )
+
+  server.registerTool(
+    'ww_resolve_loc',
+    {
+      title: 'Текст по ключу локализации',
+      description:
+        'Ключ локализации → текст. Локализация в Whiskerwood сделана таблицами Loc_* (18 языков), а не .locres. Принимает точный ключ, шаблон ключа или слова из текста. lang по умолчанию из конфига (En,Ru), lang="all" — все языки. В Lua передавай уже готовую строку: Utf8String на 5.6 не работает.',
+      inputSchema: {
+        key_or_pattern: z.string().describe('Ключ вида mod.desc.starvation, его часть или слова из текста'),
+        lang: z.string().optional().describe('Языки через запятую (En, Ru, De, Zh-Tw, …) либо all'),
+        limit: z.number().int().positive().max(200).optional(),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrap((ctx, args) => handleResolveLoc(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_find_asset',
+    {
+      title: 'Поиск ассета',
+      description:
+        'Поиск по реестру ассетов игры (AssetRegistry): путь /Game/..., имя и класс ассета. Нужен, чтобы найти файл для ww_extract_asset или понять, где лежит блюпринт. Для поиска классов и функций рефлексии используй ww_find_symbol.',
+      inputSchema: {
+        pattern: z.string().describe('Имя или часть пути; символ % задаёт свой шаблон'),
+        class: z.string().optional().describe('Фильтр по классу ассета: Blueprint, WidgetBlueprint, DataTable, Texture2D…'),
+        limit: z.number().int().positive().max(200).optional(),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrap((ctx, args) => handleFindAsset(ctx, args)),
+  )
+
+  server.registerTool(
+    'ww_extract_asset',
+    {
+      title: 'Извлечь ассет из пака',
+      description:
+        'Достаёт файлы ассета (.uasset и спутники .uexp/.ubulk) из пака игры на диск. Единственный инструмент, пишущий за пределы репозитория модов: dest_dir обязан лежать внутри extractRoot из конфига, иначе запрос отвергается.',
+      inputSchema: {
+        asset_path: z.string().describe('Путь /Game/..., путь внутри пака или имя ассета'),
+        dest_dir: z.string().describe('Каталог назначения внутри extractRoot'),
+        version: versionParam,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrap((ctx, args) => handleExtractAsset(ctx, config, args)),
   )
 
   server.registerTool(

@@ -393,7 +393,10 @@ CREATE TABLE datatables (
   name          TEXT PRIMARY KEY,          -- TechUnlocksV2
   asset_path    TEXT NOT NULL,             -- /Game/Data/AssetLookups/TechUnlocksV2
   row_struct    TEXT,                      -- FTechUnlockRow
-  row_count     INTEGER NOT NULL
+  row_count     INTEGER NOT NULL,
+  -- Добавлено в фазе 3: в Content/Data лежат не только DataTable.
+  -- datatable | loc (строки уходят в loc_entries) | data_asset (не DataTable, напр. ArcoGameTunes)
+  kind          TEXT NOT NULL DEFAULT 'datatable'
 );
 CREATE TABLE datatable_rows (
   table_name    TEXT NOT NULL,
@@ -1021,13 +1024,18 @@ MCP-клиента — и второй файл затирает первый, �
 
 ### Фаза 3 — Данные игры
 
-- [ ] Sidecar `WwParse` на .NET 8 + CUE4Parse: `.uasset` + `.usmap` → JSON
-- [ ] Индексация 122 DataTable и `Loc_*` (18 языков). AssetRegistry уже проиндексирован в фазе 1
-- [ ] Порт `wwpak.py` на TypeScript для `ww_extract_asset` + ограничение `dest_dir` пределами `extractRoot` (§8.1)
-- [ ] `ww_get_datatable`, `ww_resolve_loc`, `ww_find_asset`, `ww_extract_asset`
+- [x] Sidecar `WwParse` на **.NET 10** + CUE4Parse `1.2.2.202608`: `.uasset` + `.usmap` → JSONL — `sidecar/WwParse/`; net8.0 отпал, пакет CUE4Parse собран только под net10.0
+- [x] Индексация DataTable и `Loc_*` — **59 таблиц** (из 61 `.uasset` в `Content/Data`), 19 из них `Loc_*`; 1779 строк данных + **39 009 записей локализации**. AssetRegistry уже проиндексирован в фазе 1
+- [x] Порт `wwpak.py` на TypeScript для `ww_extract_asset` + ограничение `dest_dir` пределами `extractRoot` (§8.1) — `PakReader` из фазы 1 + `PathSandbox([extractRoot])`, статус `dest_dir_rejected`
+- [x] `ww_get_datatable`, `ww_resolve_loc`, `ww_find_asset`, `ww_extract_asset`
 
 **Готово, когда:** `ww_get_datatable("TechUnlocksV2")` отдаёт строки с реальными ключами,
 а `ww_resolve_loc("mod.desc.starvation", "Ru")` — русский текст.
+
+**Статус 2026-08-29: завершена.** Оба условия выполнены: `TechUnlocksV2` — 174 строки
+(`unlock.lumbermill` со `associatedGridActor: lumbermill`, `childUnlocks: [unlock.industry]`),
+`mod.desc.starvation` [Ru] → «Скоро умрет без еды!». Детали, отклонения от спеки и разбор
+двух не-DataTable ассетов — в `2026-08-29-phase3-results.md`.
 
 ### Фаза 4 — Авторинг и приёмка
 

@@ -7,6 +7,7 @@ import { ensureFingerprint } from '../utils/game-fingerprint'
 import { publishStagedProfile, stagingDirFor, sweepStagingAndTrash } from '../utils/profile-publish'
 import { profileIdFor } from '../contract'
 import { buildReflectionIndex } from './index-reflection'
+import { buildGameDataIndex } from './index-gamedata'
 
 interface InputFingerprint {
   size: number
@@ -26,14 +27,15 @@ async function md5OfFile(path: string): Promise<string> {
   return hash.digest('hex')
 }
 
-async function fingerprintInput(path: string, cached?: InputFingerprint): Promise<InputFingerprint> {
+async function fingerprintInput(path: string, cached?: InputFingerprint, hash = true): Promise<InputFingerprint> {
   const st = statSync(path)
   const size = Number(st.size)
   const mtimeMs = st.mtimeMs
   if (cached && cached.size === size && cached.mtimeMs === mtimeMs) {
     return { size, mtimeMs, md5: cached.md5 }
   }
-  return { size, mtimeMs, md5: await md5OfFile(path) }
+  // Пак — 4 ГБ, хешировать его на каждую сверку нельзя: сравниваем по size+mtime
+  return { size, mtimeMs, md5: hash ? await md5OfFile(path) : `${size}:${mtimeMs}` }
 }
 
 function findUsmap(dumpsDir: string): { path: string; capturedAt: string } | null {
@@ -120,7 +122,9 @@ async function main(): Promise<void> {
     usmap: usmap!.path,
     assetRegistry: assetRegistryPath,
     oldDump: existsSync(oldDumpPath) ? oldDumpPath : '',
+    pak: cfg.pakPath,
   }
+  const cheapInputs = new Set(['pak'])
 
   if (!force && cachedBuildFp && cachedBuildFp.profileId === profileId && cachedBuildFp.schemaVersion === INDEX_SCHEMA_VERSION) {
     let same = true
@@ -131,7 +135,7 @@ async function main(): Promise<void> {
         same = false
         break
       }
-      const fresh = await fingerprintInput(path, cached)
+      const fresh = await fingerprintInput(path, cached, !cheapInputs.has(key))
       if (fresh.md5 !== cached.md5) {
         same = false
         break
@@ -163,6 +167,14 @@ async function main(): Promise<void> {
     dumpCapturedAt: usmap!.capturedAt,
   })
 
+  console.log('Данные игры (сайдкар WwParse: CUE4Parse + .usmap)...')
+  const gamedata = await buildGameDataIndex(`${staging}/index.db`, cfg, {
+    pakPath: cfg.pakPath,
+    usmapPath: usmap!.path,
+    jsonlPath: `${cfg.stateDir}/gamedata.jsonl`,
+  })
+  console.log(`  ${gamedata.meta.sidecar_log}`)
+
   const contract: ProfileContract = {
     profileId,
     gameId: 'whiskerwood',
@@ -181,7 +193,7 @@ async function main(): Promise<void> {
   const newBuildFp: BuildFingerprint = { schemaVersion: INDEX_SCHEMA_VERSION, profileId, inputs: {} }
   for (const [key, path] of Object.entries(inputPaths)) {
     if (!path) continue
-    newBuildFp.inputs[key] = await fingerprintInput(path, cachedBuildFp?.inputs[key])
+    newBuildFp.inputs[key] = await fingerprintInput(path, cachedBuildFp?.inputs[key], !cheapInputs.has(key))
   }
   writeFileSync(fpPath, JSON.stringify(newBuildFp, null, 2))
 
@@ -204,6 +216,9 @@ async function main(): Promise<void> {
     'registry_assets',
   ]
   for (const k of keys) console.log(`  ${k}: ${summary.meta[k]}`)
+  for (const k of ['gamedata_tables', 'gamedata_data_assets', 'gamedata_rows', 'loc_tables', 'loc_entries', 'gamedata_failed_assets']) {
+    console.log(`  ${k}: ${gamedata.meta[k]}`)
+  }
 
   console.log('Приёмочные проверки фазы 1:')
   console.log(`  SetResearchTopic найден с hook_path: ${summary.acceptance.setResearchTopicFound}`)
@@ -212,6 +227,14 @@ async function main(): Promise<void> {
   if (!summary.acceptance.setResearchTopicFound || summary.acceptance.startResearchFound || !summary.acceptance.mouseBlipHookPath) {
     console.error('Приёмочные критерии фазы 1 НЕ выполнены')
     process.exit(2)
+  }
+
+  console.log('Приёмочные проверки фазы 3:')
+  console.log(`  TechUnlocksV2 строк: ${gamedata.acceptance.techUnlocksRows} (пример ключа: ${gamedata.acceptance.techUnlocksSampleKey ?? 'НЕТ'})`)
+  console.log(`  mod.desc.starvation [Ru]: ${gamedata.acceptance.starvationRu ?? 'НЕТ'}`)
+  if (gamedata.acceptance.techUnlocksRows === 0 || !gamedata.acceptance.starvationRu) {
+    console.error('Приёмочные критерии фазы 3 НЕ выполнены')
+    process.exit(3)
   }
 }
 

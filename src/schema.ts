@@ -1,4 +1,4 @@
-export const INDEX_SCHEMA_VERSION = 2
+export const INDEX_SCHEMA_VERSION = 3
 
 export const INDEX_SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -80,7 +80,8 @@ CREATE TABLE datatables (
   name          TEXT PRIMARY KEY,
   asset_path    TEXT NOT NULL,
   row_struct    TEXT,
-  row_count     INTEGER NOT NULL
+  row_count     INTEGER NOT NULL,
+  kind          TEXT NOT NULL DEFAULT 'datatable'
 );
 CREATE TABLE datatable_rows (
   table_name    TEXT NOT NULL,

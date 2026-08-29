@@ -6,3 +6,7 @@ state
 *.log
 dumps
 bridge/WWBridge/Scripts/config.lua
+
+# сайдкар .NET
+sidecar/**/bin
+sidecar/**/obj
