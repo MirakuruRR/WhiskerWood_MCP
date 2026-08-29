@@ -965,19 +965,19 @@ MCP-клиента — и второй файл затирает первый, �
 
 ### Фаза 1 — Read-ядро
 
-- [ ] `wwmcp.config.json` + валидация всех путей на старте (§8.1) — **первое, во что упирается фаза**
-- [ ] Каркас: `createServer(config)`, `GameContext`, `PathSandbox` (с `realpath`), `ai-text`
-- [ ] Реестр профилей: `profile.json` как маркер, `INDEX_SCHEMA_VERSION`, fail-fast резолюция, atomic publish
-- [ ] Двухуровневый fingerprint версии (§8.2): `ProjectVersion` из `DefaultGame.ini` (**проверено: `0.6.190.0`**) за кэшем `size+mtime`
-- [ ] Парсер `UE4SS_ObjectDump.txt` (грамматика в §14.1, **включая безадресные inner-строки**) + **политика фильтрации** (§7.1)
-- [ ] Парсер `.usmap`: типы свойств, `super_path`, **1834 енума** (раскладка в §14.6)
-- [ ] Резолв типов свойств и параметров по карте адрес→путь (`[pc:]`/`[ss:]`/`[ai:]`), `type_source = 'objdump'`
-- [ ] **Парсер `AssetRegistry.bin` и таблица `bp_classes`** — остаётся в фазе 1, но как знаменатель `coverage_bp_ratio` и перекрёстная проверка: `hook_path` для BP берётся из дампа напрямую (§6.2)
-- [ ] Сборка `objects.hook_path` по правилам §9.1 + `hook_path_status`
-- [ ] Проверка покрытия: BP-ассеты из AssetRegistry против проиндексированных `_C` → `coverage_bp_ratio`
-- [ ] Слияние источников типов с проставлением `type_source`
-- [ ] `ww_find_symbol`, `ww_search_members`, `ww_get_type`, `ww_get_function`, `ww_verify_hook`, `ww_index_status`
-- [ ] Юнит-тесты: парсер дампа, парсер usmap, нормализация путей, `compareVersions`, `buildFtsQuery`, `PathSandbox`, рендер вывода
+- [x] `wwmcp.config.json` + валидация всех путей на старте (§8.1) — **первое, во что упирается фаза**
+- [x] Каркас: `createServer(config)`, `GameContext`, `PathSandbox` (с `realpath`), `ai-text`
+- [x] Реестр профилей: `profile.json` как маркер, `INDEX_SCHEMA_VERSION`, fail-fast резолюция, atomic publish
+- [x] Двухуровневый fingerprint версии (§8.2): `ProjectVersion` из `DefaultGame.ini` (**проверено: `0.6.190.0`**) за кэшем `size+mtime` — читается из пака TS-портом `wwpak.py`
+- [x] Парсер `UE4SS_ObjectDump.txt` (грамматика в §14.1, **включая безадресные inner-строки**) + **политика фильтрации** (§7.1)
+- [x] Парсер `.usmap`: типы свойств, `super_path`, **1834 енума** (раскладка в §14.6; подтверждена по исходникам `USMapGenerator` UE4SS, включая расширение `PPTH`)
+- [x] Резолв типов свойств и параметров по карте адрес→путь (`[pc:]`/`[ss:]`/`[ai:]`), `type_source = 'objdump'`
+- [x] **Парсер `AssetRegistry.bin` и таблица `bp_classes`** — остаётся в фазе 1, но как знаменатель `coverage_bp_ratio` и перекрёстная проверка: `hook_path` для BP берётся из дампа напрямую (§6.2); формат реверс-инжинирен, 6 534 записи ассетов
+- [x] Сборка `objects.hook_path` по правилам §9.1 + `hook_path_status`
+- [x] Проверка покрытия: BP-ассеты из AssetRegistry против проиндексированных `_C` → `coverage_bp_ratio` (0.9988)
+- [x] Слияние источников типов с проставлением `type_source` (uht → objdump → usmap → none)
+- [x] `ww_find_symbol`, `ww_search_members`, `ww_get_type`, `ww_get_function`, `ww_verify_hook`, `ww_index_status`
+- [ ] Юнит-тесты: парсер дампа, парсер usmap, нормализация путей, `compareVersions`, `buildFtsQuery`, `PathSandbox`, рендер вывода — **снято `CLAUDE.md` («не пишем тесты»)**; заменено смоком `src/scripts/smoke-client.ts`
 
 **Готово, когда** выполняются оба условия:
 
@@ -987,6 +987,9 @@ MCP-клиента — и второй файл затирает первый, �
 2. `ww_get_function("MouseMessageBlip.MouseMessageBlip_C.Construct")` возвращает
    `hook_path: /Game/…/MouseMessageBlip.MouseMessageBlip_C:Construct` — то есть BP-джойн
    работает, а не просто объявлен.
+
+**Статус 2026-08-29: завершена.** Оба приёмочных условия выполнены; детали, числа сборки
+и реверс форматов — в `2026-08-29-phase1-results.md`.
 
 ### Фаза 2 — Runtime bridge
 

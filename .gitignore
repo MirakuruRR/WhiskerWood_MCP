@@ -1,1 +1,7 @@
+node_modules
+.bun-tmp
+.bun-cache
+dist
+state
+*.log
 dumps
