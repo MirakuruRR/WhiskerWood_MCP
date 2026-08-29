@@ -1,6 +1,6 @@
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText, MAX_RESULTS, FTS_LIMIT } from '../utils/ai-text'
-import { buildFtsQuery } from '../utils/fts'
+import { buildFtsQuery, tokenizePattern } from '../utils/fts'
 import { pathFields } from './common'
 
 export interface FindSymbolArgs {
@@ -10,9 +10,18 @@ export interface FindSymbolArgs {
   limit?: number
 }
 
+interface SymbolRow {
+  path: string
+  kind: string
+  package: string
+  hook_path: string | null
+  object_path: string | null
+}
+
 export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string {
   const fts = buildFtsQuery(args.pattern)
-  if (!fts) {
+  const tokens = tokenizePattern(args.pattern)
+  if (!fts || tokens.length === 0) {
     return renderAiText({
       reportType: 'symbol_search',
       fields: { ...versionEchoFields(ctx), status: 'error', error: 'пустой запрос' },
@@ -29,13 +38,21 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
   const filterParams: string[] = []
   if (args.kind && !bpKind) filterParams.push(args.kind)
   if (args.package) filterParams.push(args.package)
-  const params: Array<string | number> = [fts, ...filterParams]
+
+  const likeWhere = (q: string): string => tokens.map(() => `(${q}name LIKE ? OR ${q}path LIKE ?)`).join(' AND ')
+  const likeParams = tokens.flatMap((t) => [`%${t}%`, `%${t}%`])
 
   const total = (ctx.db
-    .query(`SELECT COUNT(*) c FROM symbols_fts WHERE symbols_fts MATCH ?${filters('')}`)
-    .get(...(params as never[])) as { c: number }).c
+    .query(
+      `SELECT COUNT(*) c FROM (
+         SELECT s.path FROM symbols_fts s WHERE symbols_fts MATCH ?${filters('s.')}
+         UNION
+         SELECT o.path FROM objects o WHERE o.kind != 'Package' AND ${likeWhere('o.')}${filters('o.')}
+       )`,
+    )
+    .get(...([fts, ...filterParams, ...likeParams, ...filterParams] as never[])) as { c: number }).c
 
-  const rows = ctx.db
+  const ftsRows = ctx.db
     .query(
       `SELECT s.path, s.kind, s.package, o.hook_path, o.object_path
        FROM symbols_fts s
@@ -44,55 +61,32 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
        ORDER BY bm25(symbols_fts, 8.0, 4.0, 2.0, 1.0)
        LIMIT ?`,
     )
-    .all(...(params as never[]), limit) as Array<{ path: string; kind: string; package: string; hook_path: string | null; object_path: string | null }>
+    .all(...([fts, ...filterParams, limit] as never[])) as SymbolRow[]
 
-  if (rows.length === 0 && total === 0) {
-    const tokens = args.pattern.split(/\s+/).filter((t) => t.length > 0)
-    if (tokens.length > 0) {
-      const likeWhere = tokens.map(() => 'name LIKE ?').join(' AND ')
-      const likeParams = tokens.map((t) => `%${t}%`)
-      const fbRows = ctx.db
-        .query(
-          `SELECT path, kind, package, hook_path, object_path FROM objects
-           WHERE kind != 'Package' AND ${likeWhere}${filters('')}
-           ORDER BY length(path)
-           LIMIT ?`,
-        )
-        .all(...([...likeParams, ...filterParams] as never[]), limit) as Array<{
-        path: string
-        kind: string
-        package: string
-        hook_path: string | null
-        object_path: string | null
-      }>
-      if (fbRows.length > 0) {
-        return renderAiText({
-          reportType: 'symbol_search',
-          fields: {
-            ...versionEchoFields(ctx),
-            query: args.pattern,
-            mode: 'like_fallback',
-            truncated: fbRows.length >= limit,
-            limit,
-          },
-          results: fbRows.map((r) => ({
-            fields: {
-              path: r.path,
-              kind: r.kind,
-              package: r.package,
-              ...pathFields(r.hook_path, r.object_path),
-            },
-          })),
-        })
-      }
-    }
+  const seen = ftsRows.map((r) => r.path)
+  const rest = limit - ftsRows.length
+  let likeRows: SymbolRow[] = []
+  if (rest > 0) {
+    const notIn = seen.length > 0 ? ` AND path NOT IN (${seen.map(() => '?').join(', ')})` : ''
+    likeRows = ctx.db
+      .query(
+        `SELECT path, kind, package, hook_path, object_path FROM objects
+         WHERE kind != 'Package' AND ${likeWhere('')}${filters('')}${notIn}
+         ORDER BY length(path)
+         LIMIT ?`,
+      )
+      .all(...([...likeParams, ...filterParams, ...seen, rest] as never[])) as SymbolRow[]
   }
+
+  const rows = [...ftsRows, ...likeRows]
 
   return renderAiText({
     reportType: 'symbol_search',
     fields: {
       ...versionEchoFields(ctx),
       query: args.pattern,
+      prefix_matches: ftsRows.length,
+      substring_matches: likeRows.length,
       truncated: total > rows.length,
       total_found: total,
       limit,
