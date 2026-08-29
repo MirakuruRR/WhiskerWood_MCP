@@ -22,6 +22,12 @@ import { handleScaffoldMod, TEMPLATES } from './tools/scaffold-mod'
 import { handleGenerateHook } from './tools/generate-hook'
 import { handleValidateMod } from './tools/validate-mod'
 import { handleDeployMod } from './tools/deploy-mod'
+import { handleDiffVersions } from './tools/diff-versions'
+import { handleMemoryWakeup } from './tools/memory-wakeup'
+import { handleMemorySearch } from './tools/memory-search'
+import { handleMemoryAdd } from './tools/memory-add'
+import { handleMemoryInvalidate } from './tools/memory-invalidate'
+import { MEMORY_CATEGORIES } from './utils/memory-db'
 import { registerPrompts } from './prompts'
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false }
@@ -71,6 +77,18 @@ export function createServer(config: ServerConfig): McpServer {
       try {
         const text = await fn(ctx, args)
         return { content: [{ type: 'text' as const, text }] }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        return { content: [{ type: 'text' as const, text: errorText('server_error', 'error', msg) }], isError: true }
+      }
+    }
+
+  // Память и сравнение версий живут вне профиля: им не нужен готовый индекс текущей версии.
+  const wrapPlain =
+    <A>(fn: (args: A) => string) =>
+    async (args: A) => {
+      try {
+        return { content: [{ type: 'text' as const, text: fn(args) }] }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         return { content: [{ type: 'text' as const, text: errorText('server_error', 'error', msg) }], isError: true }
@@ -398,6 +416,104 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: LIVE_WRITE,
     },
     wrapBridge((ctx, args) => handleDeployMod(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_diff_versions',
+    {
+      title: 'Различия между версиями игры',
+      description:
+        'Сравнивает два собранных профиля: что исчезло, что появилось, у каких функций сменилась сигнатура и у каких объектов сменился hook_path. Первый шаг после патча игры, до починки модов. Отсутствие BP-класса в новом профиле не означает удаления — дамп это снимок памяти, перепроверяй через ww_verify_hook с live: true.',
+      inputSchema: {
+        from: z.string().describe('Версия-источник, например 0.6.190.0'),
+        to: z.string().describe('Версия-приёмник'),
+        kind: z
+          .string()
+          .optional()
+          .describe('Ограничить вид: Class | ScriptStruct | Enum | Function | Package | bp. По умолчанию всё, кроме пакетов'),
+        limit: z.number().int().positive().max(200).optional(),
+      },
+      annotations: READ_ONLY,
+    },
+    wrapPlain((args) => handleDiffVersions(config, args)),
+  )
+
+  server.registerTool(
+    'ww_memory_wakeup',
+    {
+      title: 'Проектная память: обзор',
+      description:
+        'Первый вызов в сессии: что уже решено по этому проекту — принятые решения, известные грабли, предпочтения, незакрытые todo. Память общая на игру и переживает сессии. Вызывай ДО разведки API: половина ответов может быть уже записана.',
+      inputSchema: {
+        mod_name: z.string().optional().describe('Сузить до одного мода; общие записи остаются в выдаче'),
+        limit: z.number().int().positive().max(100).optional(),
+      },
+      annotations: READ_ONLY,
+    },
+    wrapPlain((args) => handleMemoryWakeup(config, args)),
+  )
+
+  server.registerTool(
+    'ww_memory_search',
+    {
+      title: 'Проектная память: поиск',
+      description:
+        'Полнотекстовый поиск по проектной памяти. Спрашивай прежде, чем заново выяснять то, что уже выяснялось: почему выбран такой хук, какая подсистема игры не работает, что сломалось на прошлом патче. Погашенные записи по умолчанию не выдаются.',
+      inputSchema: {
+        query: z.string().describe('Слова по теме: имя функции, подсистемы, мода'),
+        mod_name: z.string().optional().describe('Сузить до одного мода; общие записи остаются в выдаче'),
+        category: z.enum(MEMORY_CATEGORIES).optional(),
+        include_invalidated: z.boolean().optional().describe('Показать и погашенные записи'),
+        limit: z.number().int().positive().max(100).optional(),
+      },
+      annotations: READ_ONLY,
+    },
+    wrapPlain((args) => handleMemorySearch(config, args)),
+  )
+
+  server.registerTool(
+    'ww_memory_add',
+    {
+      title: 'Проектная память: записать',
+      description:
+        'Батч-запись в проектную память по итогам работы: принятые решения (decision), обнаруженные грабли (pitfall), предпочтения владельца (preference), незакрытые хвосты (todo), факты (note). Записывай то, что нельзя вывести из кода и индекса: почему сделано так, а не иначе, и что было проверено вживую. Запись с category=pitfall и тегами-символами попадает в линт ww_validate_mod. Повтор той же summary в той же категории обновляет запись, а не плодит дубль.',
+      inputSchema: {
+        entries: z
+          .array(
+            z.object({
+              category: z.enum(MEMORY_CATEGORIES),
+              summary: z.string().min(3).describe('Суть одной строкой — по ней запись ищут и по ней же дедуплицируют'),
+              body: z.string().optional().describe('Детали: что проверено, чем подтверждено, что осталось неясным'),
+              tags: z
+                .array(z.string())
+                .optional()
+                .describe('Символы и темы. Для pitfall тег-идентификатор (Utf8String, ForEachUObject) становится триггером линта'),
+              mod_name: z.string().optional().describe('К какому моду относится; без него запись общая для всех модов'),
+              importance: z.number().int().min(1).max(5).optional().describe('1..5, по умолчанию 3'),
+            }),
+          )
+          .min(1)
+          .max(20),
+        mod_name: z.string().optional().describe('Мод по умолчанию для всех записей батча'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrapPlain((args) => handleMemoryAdd(config, args)),
+  )
+
+  server.registerTool(
+    'ww_memory_invalidate',
+    {
+      title: 'Проектная память: погасить запись',
+      description:
+        'Мягкое удаление записи, ставшей неверной: после патча игры, смены решения или опровержения гипотезы. Из поиска и линта запись уходит, история сохраняется. Гаси, а не переписывай: причина устаревания сама по себе ценна.',
+      inputSchema: {
+        public_id: z.string().describe('Идентификатор из ww_memory_search или ww_memory_wakeup'),
+        reason: z.string().min(3).describe('Почему запись больше не верна'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrapPlain((args) => handleMemoryInvalidate(config, args)),
   )
 
   registerPrompts(server)

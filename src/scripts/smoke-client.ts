@@ -3,6 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { rmSync } from 'node:fs'
 import { loadConfig, validateConfig } from '../config'
 import { createServer } from '../server'
+import { closeMemoryDb, openMemoryDb } from '../utils/memory-db'
 
 const cfg = loadConfig()
 const problems = validateConfig(cfg)
@@ -107,6 +108,40 @@ await call('ww_validate_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifie
 await call('ww_validate_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier`, live: true })
 await call('ww_deploy_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier`, mode: 'dev' })
 
+await call('ww_memory_wakeup', {})
+const added = await call('ww_memory_add', {
+  mod_name: 'smoke-probe',
+  entries: [
+    {
+      category: 'pitfall',
+      summary: 'Utf8String на UE 5.6 не работает: кириллица уходит в мусор',
+      body: 'Проверено на стенде 0.6.190.0. Текст брать через ww_resolve_loc, в Lua передавать готовую строку.',
+      tags: ['Utf8String'],
+      importance: 5,
+    },
+    {
+      category: 'decision',
+      summary: 'Хук вешаем на GetResearchInfo, а не на startResearch',
+      body: 'startResearch есть в строках бинарника, но отсутствует в рефлексии.',
+      tags: ['GetResearchInfo', 'startResearch'],
+    },
+  ],
+})
+await call('ww_memory_add', {
+  mod_name: 'smoke-probe',
+  entries: [{ category: 'pitfall', summary: 'Utf8String на UE 5.6 не работает: кириллица уходит в мусор', body: 'Повтор — должен обновить, а не задвоить.', tags: ['Utf8String'] }],
+})
+await call('ww_memory_search', { query: 'Utf8String' })
+await call('ww_memory_search', { query: 'research', mod_name: 'smoke-probe' })
+await call('ww_memory_search', { query: 'такогонетвпамяти' })
+const pid = /public_id: (\S+)/.exec(added)?.[1] ?? 'нет'
+await call('ww_memory_invalidate', { public_id: pid, reason: 'смоук-прогон, запись тестовая' })
+await call('ww_memory_invalidate', { public_id: pid, reason: 'повтор' })
+await call('ww_memory_invalidate', { public_id: 'нет-такого-id', reason: 'проверка ветки not_found' })
+
+await call('ww_diff_versions', { from: '0.6.190.0', to: '0.6.190.0' })
+await call('ww_diff_versions', { from: '0.6.190.0', to: '9.9.9.9' })
+
 const prompts = await client.listPrompts()
 console.log(`
 промптов зарегистрировано: ${prompts.prompts.length}`)
@@ -116,6 +151,8 @@ console.log((newMod.messages[0].content as { text: string }).text.slice(0, 400))
 
 
 rmSync(scaffoldRoot, { recursive: true, force: true })
+openMemoryDb(cfg).run("DELETE FROM project_memories WHERE mod_name = 'smoke-probe'")
+closeMemoryDb()
 
 await client.close()
 await server.close()

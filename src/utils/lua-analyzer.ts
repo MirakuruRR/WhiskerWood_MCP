@@ -62,8 +62,15 @@ export interface Lint {
   message: string
 }
 
+export interface CommentSpan {
+  line: number
+  from: number
+  to: number
+}
+
 export interface Analysis {
   syntaxError?: { message: string; line: number; column: number }
+  comments: CommentSpan[]
   refs: Reference[]
   lints: Lint[]
   requires: string[]
@@ -224,10 +231,11 @@ function collectAliases(ast: any): { aliases: Map<string, string>; modules: Map<
 export function analyzeLua(source: string): Analysis {
   let ast: any
   try {
-    ast = parse(source, { locations: true, luaVersion: '5.3', comments: false })
+    ast = parse(source, { locations: true, luaVersion: '5.3', comments: true })
   } catch (e: any) {
     return {
       syntaxError: { message: String(e.message ?? e), line: e.line ?? 0, column: (e.column ?? 0) + 1 },
+      comments: [],
       refs: [],
       lints: [],
       requires: [],
@@ -375,7 +383,21 @@ export function analyzeLua(source: string): Analysis {
   const rootCtx: Ctx = { topLevel: true, asyncOrigin: null, inGameThread: false }
   for (const stmt of ast.body ?? []) walk(stmt, rootCtx)
 
-  return { refs, lints, requires, usesDirectRegisterHook, usesWWRegisterHook }
+  const comments: CommentSpan[] = []
+  for (const c of (ast.comments ?? []) as any[]) {
+    const start = c.loc?.start
+    const end = c.loc?.end
+    if (!start || !end) continue
+    for (let ln = start.line; ln <= end.line; ln++) {
+      comments.push({
+        line: ln,
+        from: ln === start.line ? start.column + 1 : 1,
+        to: ln === end.line ? end.column : Number.MAX_SAFE_INTEGER,
+      })
+    }
+  }
+
+  return { comments, refs, lints, requires, usesDirectRegisterHook, usesWWRegisterHook }
 }
 
 export function isClassNameArgument(fn: string): boolean {

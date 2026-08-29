@@ -3,10 +3,11 @@ import { ServerConfig } from '../config'
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { AiTextResult, renderAiText, Scalar } from '../utils/ai-text'
 import { PathSandboxError } from '../utils/path-sandbox'
-import { analyzeLua, Reference } from '../utils/lua-analyzer'
+import { analyzeLua, CommentSpan, Reference } from '../utils/lua-analyzer'
 import { listSiblingMods, loadModProject, ModProject, relativeTo } from '../utils/mod-project'
 import { getBridge } from '../utils/bridge-client'
 import { findObject, isHookable, ObjectHit, suggestSimilar } from './common'
+import { activePitfalls, PitfallHint } from './memory-common'
 import { isLevelLoaded } from './bridge-common'
 
 export interface ValidateModArgs {
@@ -190,6 +191,53 @@ function checkClassName(ctx: GameContext, ref: Reference, file: string, out: Fin
   }
 }
 
+function locateToken(source: string, token: string, comments: CommentSpan[]): { line: number; column: number } | null {
+  const lines = source.split(/\r?\n/)
+  const inComment = (line: number, column: number): boolean =>
+    comments.some((c) => c.line === line && column >= c.from && column <= c.to)
+  for (let i = 0; i < lines.length; i++) {
+    let at = lines[i].indexOf(token)
+    while (at !== -1) {
+      const before = at === 0 ? '' : lines[i][at - 1]
+      const after = lines[i][at + token.length] ?? ''
+      // точка и двоеточие перед токеном это обращение к полю или методу — как раз то, что ловим
+      if (!/\w/.test(before) && !/\w/.test(after) && !inComment(i + 1, at + 1)) {
+        return { line: i + 1, column: at + 1 }
+      }
+      at = lines[i].indexOf(token, at + 1)
+    }
+  }
+  return null
+}
+
+function checkPitfalls(
+  pitfalls: PitfallHint[],
+  source: string,
+  comments: CommentSpan[],
+  file: string,
+  out: Finding[],
+): number {
+  let hits = 0
+  for (const p of pitfalls) {
+    for (const token of p.tokens) {
+      const at = locateToken(source, token, comments)
+      if (!at) continue
+      hits++
+      out.push({
+        severity: 'warn',
+        code: 'memory_pitfall',
+        file,
+        line: at.line,
+        column: at.column,
+        message: `${token}: в проектной памяти на это записаны грабли — ${p.summary}`,
+        extra: { public_id: p.public_id, details_via: 'ww_memory_search' },
+      })
+      break
+    }
+  }
+  return hits
+}
+
 function collectHookUses(ctx: GameContext, mod: ModProject): HookUse[] {
   const uses: HookUse[] = []
   for (const file of mod.luaFiles) {
@@ -244,6 +292,9 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
     })
   }
 
+  const pitfalls = activePitfalls(config, mod.name)
+  let pitfallHits = 0
+
   const findings: Finding[] = []
   const probeTargets = new Set<string>()
   const uses: HookUse[] = []
@@ -282,6 +333,8 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
       })
       continue
     }
+
+    pitfallHits += checkPitfalls(pitfalls, source, analysis.comments, rel, findings)
 
     for (const lint of analysis.lints) {
       findings.push({ severity: lint.severity, code: lint.code, file: rel, line: lint.line, column: lint.column, message: lint.message })
@@ -406,6 +459,7 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
       hook_paths_checked: uses.length,
       dynamic_paths: dynamicPaths,
       collisions,
+      memory_pitfalls: pitfallHits,
       errors,
       warnings,
       ...(args.live ? { live: liveNote, level_loaded: levelLoaded } : {}),
