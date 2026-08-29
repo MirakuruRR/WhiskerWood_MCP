@@ -30,13 +30,13 @@ export function handleVerifyHook(ctx: GameContext, args: VerifyHookArgs): string
         }
         return { fields }
       }
-      if (obj.hook_path) {
+      if (obj.hook_path || obj.object_path) {
         const fields: Record<string, Scalar> = {
           input: raw,
           status: 'found_not_hookable',
           resolved_path: obj.path,
           kind: obj.kind,
-          object_path: obj.hook_path,
+          object_path: obj.object_path ?? obj.hook_path!,
           note: 'этот вид объектов нельзя хукать; путь годится для StaticFindObject, не для RegisterHook',
         }
         return { fields }

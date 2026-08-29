@@ -47,7 +47,7 @@ export function handleGetType(ctx: GameContext, args: GetTypeArgs): string {
     package: obj.package,
     is_blueprint: obj.is_blueprint === 1,
     ...(obj.super_path ? { super_path: obj.super_path } : {}),
-    ...(obj.hook_path ? pathFields(obj.kind, obj.hook_path) : { hook_path_status: obj.hook_path_status }),
+    ...(obj.hook_path || obj.object_path ? pathFields(obj.hook_path, obj.object_path) : { hook_path_status: obj.hook_path_status }),
   }
 
   if (obj.kind === 'Enum') {

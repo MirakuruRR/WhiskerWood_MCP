@@ -37,14 +37,14 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
 
   const rows = ctx.db
     .query(
-      `SELECT s.path, s.kind, s.package, o.hook_path
+      `SELECT s.path, s.kind, s.package, o.hook_path, o.object_path
        FROM symbols_fts s
        LEFT JOIN objects o ON o.path = s.path
        WHERE symbols_fts MATCH ?${filters('s.')}
        ORDER BY bm25(symbols_fts, 8.0, 4.0, 2.0, 1.0)
        LIMIT ?`,
     )
-    .all(...(params as never[]), limit) as Array<{ path: string; kind: string; package: string; hook_path: string | null }>
+    .all(...(params as never[]), limit) as Array<{ path: string; kind: string; package: string; hook_path: string | null; object_path: string | null }>
 
   if (rows.length === 0 && total === 0) {
     const tokens = args.pattern.split(/\s+/).filter((t) => t.length > 0)
@@ -53,7 +53,7 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
       const likeParams = tokens.map((t) => `%${t}%`)
       const fbRows = ctx.db
         .query(
-          `SELECT path, kind, package, hook_path FROM objects
+          `SELECT path, kind, package, hook_path, object_path FROM objects
            WHERE kind != 'Package' AND ${likeWhere}${filters('')}
            ORDER BY length(path)
            LIMIT ?`,
@@ -63,6 +63,7 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
         kind: string
         package: string
         hook_path: string | null
+        object_path: string | null
       }>
       if (fbRows.length > 0) {
         return renderAiText({
@@ -79,7 +80,7 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
               path: r.path,
               kind: r.kind,
               package: r.package,
-              ...pathFields(r.kind, r.hook_path),
+              ...pathFields(r.hook_path, r.object_path),
             },
           })),
         })
@@ -101,7 +102,7 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
         path: r.path,
         kind: r.kind,
         package: r.package,
-        ...pathFields(r.kind, r.hook_path),
+        ...pathFields(r.hook_path, r.object_path),
       },
     })),
   })

@@ -87,6 +87,7 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
     isBlueprint: number
     gameFullPath: string | null
     hookPath: string | null
+    objectPath: string | null
     hookStatus: 'ok' | 'bp_asset_unresolved' | 'bp_asset_ambiguous'
     source: 'new' | 'old'
   }
@@ -123,6 +124,7 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
       isBlueprint: isBlueprint ? 1 : 0,
       gameFullPath: norm.gameFullPath,
       hookPath: null,
+      objectPath: null,
       hookStatus: 'ok',
       source,
     }
@@ -215,6 +217,7 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
           isBlueprint: 1,
           gameFullPath: null,
           hookPath: null,
+          objectPath: null,
           hookStatus: 'ok',
           source: 'old',
         }
@@ -234,6 +237,7 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
           isBlueprint: 0,
           gameFullPath: null,
           hookPath: null,
+          objectPath: null,
           hookStatus: 'ok',
           source: 'old',
         })
@@ -331,7 +335,7 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
   for (const row of objects.values()) {
     if (row.kind === 'Package') continue
     if (row.kind === 'Enum' || row.kind === 'ScriptStruct') {
-      row.hookPath = row.gameFullPath ?? `/Script/${row.path}`
+      row.objectPath = row.gameFullPath ?? `/Script/${row.path}`
       continue
     }
     const isFunc = row.kind === 'Function'
@@ -350,6 +354,7 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
       if (bp?.assetPath) {
         const classPath = `${bp.assetPath}.${lastSegment(bp.path)}`
         row.hookPath = funcName ? `${classPath}:${funcName}` : classPath
+        row.objectPath = row.hookPath
         row.hookStatus = 'ok'
       } else {
         row.hookPath = null
@@ -360,6 +365,7 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
 
     if (row.gameFullPath) {
       row.hookPath = row.gameFullPath
+      row.objectPath = row.gameFullPath
       continue
     }
 
@@ -370,7 +376,14 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
     } else {
       row.hookPath = `/Script/${row.path}`
     }
+    row.objectPath = row.hookPath
   }
+
+  let objectPathOnly = 0
+  for (const row of objects.values()) {
+    if (row.objectPath && !row.hookPath) objectPathOnly++
+  }
+  meta.objects_object_path_only = objectPathOnly
 
   const uhtMerged = { params: 0, returns: 0, outParams: 0 }
   for (const [funcPath, arr] of params) {
@@ -569,10 +582,10 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
     for (const [k, v] of Object.entries(meta)) insMeta.run(k, String(v))
 
     const insObj = db.prepare(
-      'INSERT OR REPLACE INTO objects (path, kind, package, outer_path, name, dump_index, super_path, is_blueprint, hook_path, hook_path_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR REPLACE INTO objects (path, kind, package, outer_path, name, dump_index, super_path, is_blueprint, hook_path, hook_path_status, object_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     for (const row of objects.values()) {
-      insObj.run(row.path, row.kind, row.package, row.outerPath, row.name, row.dumpIndex, row.superPath, row.isBlueprint, row.hookPath, row.hookStatus)
+      insObj.run(row.path, row.kind, row.package, row.outerPath, row.name, row.dumpIndex, row.superPath, row.isBlueprint, row.hookPath, row.hookStatus, row.objectPath)
     }
 
     const insBp = db.prepare(

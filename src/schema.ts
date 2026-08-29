@@ -1,4 +1,4 @@
-export const INDEX_SCHEMA_VERSION = 1
+export const INDEX_SCHEMA_VERSION = 2
 
 export const INDEX_SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -18,7 +18,8 @@ CREATE TABLE objects (
   super_path    TEXT,
   is_blueprint  INTEGER NOT NULL DEFAULT 0,
   hook_path     TEXT,
-  hook_path_status TEXT NOT NULL DEFAULT 'ok'
+  hook_path_status TEXT NOT NULL DEFAULT 'ok',
+  object_path   TEXT
 );
 CREATE INDEX objects_kind_idx    ON objects(kind);
 CREATE INDEX objects_package_idx ON objects(package, kind);
@@ -26,6 +27,7 @@ CREATE INDEX objects_outer_idx   ON objects(outer_path);
 CREATE INDEX objects_name_idx    ON objects(name COLLATE NOCASE);
 CREATE INDEX objects_super_idx   ON objects(super_path);
 CREATE INDEX objects_hook_idx    ON objects(hook_path);
+CREATE INDEX objects_object_path_idx ON objects(object_path);
 
 CREATE TABLE bp_classes (
   path          TEXT PRIMARY KEY,
@@ -153,6 +155,7 @@ export interface ObjectRow {
   is_blueprint: number
   hook_path: string | null
   hook_path_status: 'ok' | 'bp_asset_unresolved' | 'bp_asset_ambiguous'
+  object_path: string | null
 }
 
 export interface PropertyRow {

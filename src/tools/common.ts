@@ -12,6 +12,7 @@ export interface ObjectHit {
   is_blueprint: number
   hook_path: string | null
   hook_path_status: string
+  object_path: string | null
 }
 
 const HOOKABLE_KINDS = new Set(['Class', 'Function'])
@@ -20,28 +21,39 @@ export function isHookable(kind: string): boolean {
   return HOOKABLE_KINDS.has(kind) || kind.endsWith('BlueprintGeneratedClass')
 }
 
-export function pathFields(kind: string, path: string | null): Record<string, string> {
-  if (!path) return {}
-  return isHookable(kind) ? { hook_path: path } : { object_path: path }
+export function pathFields(hookPath: string | null, objectPath: string | null): Record<string, string> {
+  if (hookPath) return { hook_path: hookPath }
+  if (objectPath) return { object_path: objectPath }
+  return {}
 }
+
+const OBJECT_COLUMNS = 'path, kind, package, outer_path, name, super_path, is_blueprint, hook_path, hook_path_status, object_path'
 
 export function findObject(ctx: GameContext, rawInput: string): ObjectHit | null {
   const norm = normalizeUserPath(rawInput)
   const byIndex = ctx.db
-    .query('SELECT path, kind, package, outer_path, name, super_path, is_blueprint, hook_path, hook_path_status FROM objects WHERE path = ?')
+    .query(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE path = ?`)
     .get(norm.indexPath) as ObjectHit | null
   if (byIndex) return byIndex
 
   if (norm.gameFullPath) {
     const byHook = ctx.db
-      .query('SELECT path, kind, package, outer_path, name, super_path, is_blueprint, hook_path, hook_path_status FROM objects WHERE hook_path = ?')
+      .query(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE hook_path = ?`)
       .get(norm.gameFullPath) as ObjectHit | null
     if (byHook) return byHook
+    const byObject = ctx.db
+      .query(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE object_path = ?`)
+      .get(norm.gameFullPath) as ObjectHit | null
+    if (byObject) return byObject
     const asClassPath = norm.gameFullPath.split(':')[0]
     const byHookClass = ctx.db
-      .query('SELECT path, kind, package, outer_path, name, super_path, is_blueprint, hook_path, hook_path_status FROM objects WHERE hook_path = ?')
+      .query(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE hook_path = ?`)
       .get(asClassPath) as ObjectHit | null
     if (byHookClass) return byHookClass
+    const byObjectClass = ctx.db
+      .query(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE object_path = ?`)
+      .get(asClassPath) as ObjectHit | null
+    if (byObjectClass) return byObjectClass
   }
   return null
 }
