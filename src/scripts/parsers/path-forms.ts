@@ -43,7 +43,13 @@ export function normalizeDumpPath(rawPath: string): NormalizedPath {
 export function normalizeUserPath(input: string): NormalizedPath {
   const s = input.trim()
   if (s.startsWith('/')) return normalizeDumpPath(s)
-  return { indexPath: s, gameFullPath: null, hadColon: false, fromMount: false }
+  const [classPart, func] = splitClassFunc(s)
+  return {
+    indexPath: func ? `${classPart}.${func}` : classPart,
+    gameFullPath: null,
+    hadColon: func !== null,
+    fromMount: false,
+  }
 }
 
 export function lastSegment(indexPath: string): string {

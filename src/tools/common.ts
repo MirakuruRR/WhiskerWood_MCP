@@ -14,6 +14,17 @@ export interface ObjectHit {
   hook_path_status: string
 }
 
+const HOOKABLE_KINDS = new Set(['Class', 'Function'])
+
+export function isHookable(kind: string): boolean {
+  return HOOKABLE_KINDS.has(kind) || kind.endsWith('BlueprintGeneratedClass')
+}
+
+export function pathFields(kind: string, path: string | null): Record<string, string> {
+  if (!path) return {}
+  return isHookable(kind) ? { hook_path: path } : { object_path: path }
+}
+
 export function findObject(ctx: GameContext, rawInput: string): ObjectHit | null {
   const norm = normalizeUserPath(rawInput)
   const byIndex = ctx.db

@@ -17,7 +17,8 @@ interface MemberHit {
 export function handleSearchMembers(ctx: GameContext, args: SearchMembersArgs): string {
   const memberKind = args.member_kind ?? 'any'
   const limit = Math.min(Math.max(args.limit ?? 20, 1), MAX_RESULTS)
-  const like = args.pattern.includes('%') || args.pattern.includes('_') ? args.pattern : `%${args.pattern}%`
+  const escaped = args.pattern.replace(/\\/g, '\\\\').replace(/_/g, '\\_')
+  const like = args.pattern.includes('%') ? escaped : `%${escaped}%`
 
   const hits: MemberHit[] = []
 

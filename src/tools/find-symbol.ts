@@ -1,6 +1,7 @@
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText, MAX_RESULTS, FTS_LIMIT } from '../utils/ai-text'
 import { buildFtsQuery } from '../utils/fts'
+import { pathFields } from './common'
 
 export interface FindSymbolArgs {
   pattern: string
@@ -19,18 +20,19 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
   }
 
   const limit = Math.min(Math.max(args.limit ?? FTS_LIMIT, 1), MAX_RESULTS)
-  const kindSql = args.kind
-    ? args.kind === 'bp' || args.kind === 'BlueprintGeneratedClass'
-      ? " AND kind LIKE '%BlueprintGeneratedClass'"
-      : ' AND kind = ?'
-    : ''
-  const packageSql = args.package ? ' AND package = ?' : ''
-  const params: Array<string | number> = [fts]
-  if (args.kind && !(args.kind === 'bp' || args.kind === 'BlueprintGeneratedClass')) params.push(args.kind)
-  if (args.package) params.push(args.package)
+  const bpKind = args.kind === 'bp' || args.kind === 'BlueprintGeneratedClass'
+  const filters = (q: string): string => {
+    const kindSql = args.kind ? (bpKind ? ` AND ${q}kind LIKE '%BlueprintGeneratedClass'` : ` AND ${q}kind = ?`) : ''
+    const packageSql = args.package ? ` AND ${q}package = ?` : ''
+    return kindSql + packageSql
+  }
+  const filterParams: string[] = []
+  if (args.kind && !bpKind) filterParams.push(args.kind)
+  if (args.package) filterParams.push(args.package)
+  const params: Array<string | number> = [fts, ...filterParams]
 
   const total = (ctx.db
-    .query(`SELECT COUNT(*) c FROM symbols_fts WHERE symbols_fts MATCH ?${kindSql}${packageSql}`)
+    .query(`SELECT COUNT(*) c FROM symbols_fts WHERE symbols_fts MATCH ?${filters('')}`)
     .get(...(params as never[])) as { c: number }).c
 
   const rows = ctx.db
@@ -38,7 +40,7 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
       `SELECT s.path, s.kind, s.package, o.hook_path
        FROM symbols_fts s
        LEFT JOIN objects o ON o.path = s.path
-       WHERE symbols_fts MATCH ?${kindSql}${packageSql}
+       WHERE symbols_fts MATCH ?${filters('s.')}
        ORDER BY bm25(symbols_fts, 8.0, 4.0, 2.0, 1.0)
        LIMIT ?`,
     )
@@ -52,11 +54,11 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
       const fbRows = ctx.db
         .query(
           `SELECT path, kind, package, hook_path FROM objects
-           WHERE kind != 'Package' AND ${likeWhere}${args.package ? ' AND package = ?' : ''}
+           WHERE kind != 'Package' AND ${likeWhere}${filters('')}
            ORDER BY length(path)
            LIMIT ?`,
         )
-        .all(...(likeParams as never[]), ...(args.package ? [args.package] : []), limit) as Array<{
+        .all(...([...likeParams, ...filterParams] as never[]), limit) as Array<{
         path: string
         kind: string
         package: string
@@ -77,7 +79,7 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
               path: r.path,
               kind: r.kind,
               package: r.package,
-              ...(r.hook_path ? { hook_path: r.hook_path } : {}),
+              ...pathFields(r.kind, r.hook_path),
             },
           })),
         })
@@ -99,7 +101,7 @@ export function handleFindSymbol(ctx: GameContext, args: FindSymbolArgs): string
         path: r.path,
         kind: r.kind,
         package: r.package,
-        ...(r.hook_path ? { hook_path: r.hook_path } : {}),
+        ...pathFields(r.kind, r.hook_path),
       },
     })),
   })

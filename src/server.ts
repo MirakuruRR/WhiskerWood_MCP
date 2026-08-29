@@ -61,7 +61,7 @@ export function createServer(config: ServerConfig): McpServer {
       description:
         'Обратный поиск: в каком классе есть поле или метод с таким именем. Сценарий «знаю что ищу, не знаю где». Для поиска самих классов/функций предпочти ww_find_symbol.',
       inputSchema: {
-        pattern: z.string().describe('Имя поля или метода (можно шаблон с % и _)'),
+        pattern: z.string().describe('Имя поля или метода. По умолчанию ищется как подстрока; символ % задаёт свой шаблон, подчёркивание трактуется буквально'),
         member_kind: z.enum(['field', 'method', 'any']).optional(),
         limit: z.number().int().positive().max(200).optional(),
         version: versionParam,
@@ -106,7 +106,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Проверка хуковых путей',
       description:
-        'Ключевой инструмент: батч-проверка путей хуков ПЕРЕД записью кода мода. Принимает пути в любой форме, нормализует и сверяет с индексом. Вызывай со всеми путями мода одним вызовом. Статусы: found | found_hook_path_unavailable | not_found | not_found_possibly_not_loaded; похожие имена идут в suggestions и заменой найденному не являются.',
+        'Ключевой инструмент: батч-проверка путей хуков ПЕРЕД записью кода мода. Принимает пути в любой форме, нормализует и сверяет с индексом. Вызывай со всеми путями мода одним вызовом. Статусы: found | found_not_hookable | found_hook_path_unavailable | not_found | not_found_possibly_not_loaded; при found_not_hookable отдаётся object_path для StaticFindObject, хукать его нельзя. Похожие имена идут в suggestions и заменой найденному не являются.',
       inputSchema: {
         paths: z.array(z.string()).min(1).describe('Проверяемые пути (до 50 за вызов)'),
         live: z

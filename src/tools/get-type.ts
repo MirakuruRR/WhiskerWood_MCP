@@ -1,6 +1,6 @@
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText, MAX_RESULTS } from '../utils/ai-text'
-import { findObject, suggestSimilar } from './common'
+import { findObject, pathFields, suggestSimilar } from './common'
 
 export interface GetTypeArgs {
   path: string
@@ -47,7 +47,7 @@ export function handleGetType(ctx: GameContext, args: GetTypeArgs): string {
     package: obj.package,
     is_blueprint: obj.is_blueprint === 1,
     ...(obj.super_path ? { super_path: obj.super_path } : {}),
-    ...(obj.hook_path ? { hook_path: obj.hook_path } : { hook_path_status: obj.hook_path_status }),
+    ...(obj.hook_path ? pathFields(obj.kind, obj.hook_path) : { hook_path_status: obj.hook_path_status }),
   }
 
   if (obj.kind === 'Enum') {

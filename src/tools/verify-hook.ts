@@ -1,7 +1,7 @@
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText, AiTextResult, Scalar } from '../utils/ai-text'
 import { normalizeUserPath } from '../scripts/parsers/path-forms'
-import { findObject, suggestSimilar } from './common'
+import { findObject, isHookable, suggestSimilar } from './common'
 
 export interface VerifyHookArgs {
   paths: string[]
@@ -9,6 +9,7 @@ export interface VerifyHookArgs {
 }
 
 const MAX_PATHS = 50
+const BP_SEGMENT_RE = /(^|\.)[^.]*_C(\.|$)/
 
 export function handleVerifyHook(ctx: GameContext, args: VerifyHookArgs): string {
   const paths = args.paths.slice(0, MAX_PATHS)
@@ -19,13 +20,24 @@ export function handleVerifyHook(ctx: GameContext, args: VerifyHookArgs): string
     const obj = findObject(ctx, raw)
 
     if (obj) {
-      if (obj.hook_path) {
+      if (obj.hook_path && isHookable(obj.kind)) {
         const fields: Record<string, Scalar> = {
           input: raw,
           status: 'found',
           resolved_path: obj.path,
           kind: obj.kind,
           hook_path: obj.hook_path,
+        }
+        return { fields }
+      }
+      if (obj.hook_path) {
+        const fields: Record<string, Scalar> = {
+          input: raw,
+          status: 'found_not_hookable',
+          resolved_path: obj.path,
+          kind: obj.kind,
+          object_path: obj.hook_path,
+          note: 'этот вид объектов нельзя хукать; путь годится для StaticFindObject, не для RegisterHook',
         }
         return { fields }
       }
@@ -41,7 +53,7 @@ export function handleVerifyHook(ctx: GameContext, args: VerifyHookArgs): string
       }
       const fields: Record<string, Scalar> = {
         input: raw,
-        status: 'found',
+        status: 'found_not_hookable',
         resolved_path: obj.path,
         kind: obj.kind,
         note: 'объект в индексе есть; хукового пути нет (не класс и не функция)',
@@ -49,7 +61,7 @@ export function handleVerifyHook(ctx: GameContext, args: VerifyHookArgs): string
       return { fields }
     }
 
-    const looksBp = raw.startsWith('/Game/') || norm.indexPath.includes('_C')
+    const looksBp = raw.startsWith('/Game/') || BP_SEGMENT_RE.test(norm.indexPath)
     const possiblyNotLoaded = looksBp && dumpCapturedAt !== 'in_level'
     const suggestions = suggestSimilar(ctx, raw, 5)
     const fields: Record<string, Scalar> = {
