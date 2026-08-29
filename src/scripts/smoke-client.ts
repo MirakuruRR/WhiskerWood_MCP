@@ -1,5 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { rmSync } from 'node:fs'
 import { loadConfig, validateConfig } from '../config'
 import { createServer } from '../server'
 
@@ -85,6 +86,36 @@ await call('ww_verify_hook', {
     '/Game/UI/Nope/DoesNotExist.DoesNotExist_C:Construct',
   ],
 })
+
+await call('ww_lua_api', {})
+await call('ww_lua_api', { symbol: 'RegisterHook' })
+await call('ww_lua_api', { symbol: 'FindAllOf' })
+await call('ww_lua_api', { category: 'threading' })
+await call('ww_lua_api', { symbol: 'НетТакогоСимвола' })
+
+await call('ww_generate_hook', { function_path: 'SystemCore.UnlockResearchComponent.SetResearchTopic', kind: 'both' })
+await call('ww_generate_hook', { function_path: 'MouseMessageBlip.MouseMessageBlip_C.Construct' })
+await call('ww_generate_hook', { function_path: 'SystemCore.UnlockResearchComponent.startResearch' })
+await call('ww_generate_hook', { function_path: 'SystemCore.UnlockResearchComponent' })
+
+const scaffoldRoot = `${cfg.modsRepo}/mods/smoke-probe`
+await call('ww_scaffold_mod', { mod_root: scaffoldRoot, template: 'hook' })
+await call('ww_scaffold_mod', { mod_root: scaffoldRoot, template: 'hook' })
+await call('ww_scaffold_mod', { mod_root: 'D:/Windows/hack', template: 'hook' })
+await call('ww_validate_mod', { mod_root: scaffoldRoot })
+await call('ww_validate_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier` })
+await call('ww_validate_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier`, live: true })
+await call('ww_deploy_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier`, mode: 'dev' })
+
+const prompts = await client.listPrompts()
+console.log(`
+промптов зарегистрировано: ${prompts.prompts.length}`)
+for (const p of prompts.prompts) console.log(`  - ${p.name}`)
+const newMod = await client.getPrompt({ name: 'ww:new-mod', arguments: { goal: 'уведомление о простое исследований', mod_name: 'research-notifier' } })
+console.log((newMod.messages[0].content as { text: string }).text.slice(0, 400))
+
+
+rmSync(scaffoldRoot, { recursive: true, force: true })
 
 await client.close()
 await server.close()

@@ -1,0 +1,620 @@
+# Справочник UE4SS Lua API для Whiskerwood. Курируется вручную: машиночитаемого
+# описания UE4SS не существует.
+#
+# status:   ok      — работает на этом стенде
+#           caution — работает, но с условием, описанным в pitfalls
+#           broken  — не работает на UE 5.6 / этой сборке UE4SS
+#           absent  — такого API нет; запись существует, чтобы агент не выдумывал его
+# verified: stand   — проверено на этом стенде (фазы 0-3)
+#           doc     — из WHISKERWOOD-MODDING.md
+#           upstream— штатный API UE4SS, отдельно на стенде не проверялся
+
+- symbol: RegisterHook
+  category: hooks
+  signature: 'RegisterHook(path: string, preFn: function, postFn?: function) -> preId, postId'
+  summary: Перехват UFunction. Коллбэк получает (Context, ...параметры функции) в обёртках.
+  status: ok
+  verified: stand
+  example: |
+    RegisterHook("/Script/SystemCore.UnlockResearchComponent:SetResearchTopic",
+      function(Context, unlockId)
+        print("[mod] topic -> " .. unlockId:get():ToString() .. "\n")
+      end)
+  pitfalls: |
+    Путь берётся из hook_path в ответе ww_get_function / ww_verify_hook и не собирается вручную.
+    Перед именем функции двоеточие, а не точка: /Script/Pkg.Class:Func.
+    Хук на несуществующую функцию не бросает ошибку — мод молча ничего не делает.
+    Все аргументы приходят обёртками RemoteUnrealParam: обязателен :get().
+    Ловятся вызовы, идущие через ProcessEvent; чисто нативные C++ -> C++ вызовы
+    (Actor:K2_SetActorLocation, UserWidget:Tick) на стенде не сработали за 12 с игры.
+    В dev-цикле через ww_deploy_mod mode=dev используй WWRegisterHook, иначе хуки
+    накапливаются с каждой перезагрузкой и коллбэк срабатывает N раз.
+
+- symbol: UnregisterHook
+  category: hooks
+  signature: 'UnregisterHook(path: string, preId: integer, postId: integer)'
+  summary: Снять ранее зарегистрированный хук по идентификаторам из RegisterHook.
+  status: ok
+  verified: stand
+  example: |
+    local preId, postId = RegisterHook(path, pre, post)
+    UnregisterHook(path, preId, postId)
+  pitfalls: |
+    Путь обязан совпадать строка-в-строку с тем, что передавали в RegisterHook.
+    Оба идентификатора обязательны, даже если postFn не задавали.
+
+- symbol: WWRegisterHook
+  category: dev
+  signature: 'WWRegisterHook(path: string, preFn: function, postFn?: function) -> preId, postId'
+  summary: Обёртка над RegisterHook, которую WWBridge подставляет на время load_mod; ведёт реестр хуков мода и снимает их при следующей загрузке.
+  status: ok
+  verified: stand
+  example: |
+    local register = WWRegisterHook or RegisterHook
+    register("/Script/SystemCore.UnlockResearchComponent:SetResearchTopic", onTopic)
+  pitfalls: |
+    Существует только внутри вызова load_mod моста. В релизной загрузке через mods.txt
+    глобали нет — пиши "local register = WWRegisterHook or RegisterHook".
+    Без неё три правки подряд в dev-цикле дают три срабатывания на одно событие.
+
+- symbol: NotifyOnNewObject
+  category: hooks
+  signature: 'NotifyOnNewObject(className: string, fn: function)'
+  summary: Коллбэк на создание каждого нового объекта указанного класса.
+  status: ok
+  verified: doc
+  example: |
+    NotifyOnNewObject("/Script/SystemCore.UnlockResearchComponent", function(obj)
+      print("[mod] component spawned: " .. obj:GetFullName() .. "\n")
+    end)
+  pitfalls: |
+    Правильный способ поймать объект, которого ещё нет на момент загрузки скрипта,
+    вместо FindFirstOf в теле мода.
+    Снять этот коллбэк нечем — он переживает перезагрузку мода в dev-цикле.
+
+- symbol: RegisterInitGameStatePostHook
+  category: hooks
+  signature: 'RegisterInitGameStatePostHook(fn: function)'
+  summary: Срабатывает после инициализации GameState — уровень уже создаётся.
+  status: ok
+  verified: stand
+  example: |
+    RegisterInitGameStatePostHook(function() ExecuteWithDelay(1000, setup) end)
+  pitfalls: |
+    Мир на момент вызова может быть ещё не полностью населён: в мосте между хуком и
+    работой с миром стоит ExecuteWithDelay(1000).
+
+- symbol: RegisterLoadMapPostHook
+  category: hooks
+  signature: 'RegisterLoadMapPostHook(fn: function)'
+  summary: Срабатывает после загрузки карты, в том числе при возврате в главное меню.
+  status: ok
+  verified: stand
+  pitfalls: |
+    Вызывается и для карты главного меню. Отличать игровой уровень от меню по имени мира:
+    в главном меню оно содержит MainMenu.
+
+- symbol: RegisterBeginPlayPostHook
+  category: hooks
+  signature: 'RegisterBeginPlayPostHook(fn: function)'
+  summary: Коллбэк после BeginPlay актора.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Вызывается для каждого актора уровня — на этой игре это тысячи вызовов
+    (FindAllOf('Actor') даёт 6497 на игровом сейве).
+    Фильтруй по классу в первой же строке коллбэка.
+
+- symbol: RegisterCustomEvent
+  category: hooks
+  signature: 'RegisterCustomEvent(eventName: string, fn: function)'
+  summary: Перехват блюпринтового Custom Event по имени, без пути класса.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Имя события не проверяется индексом рефлексии — опечатка даёт тишину.
+    Предпочитай RegisterHook по конкретному BP-пути из ww_verify_hook.
+
+- symbol: RegisterConsoleCommandHandler
+  category: hooks
+  signature: 'RegisterConsoleCommandHandler(command: string, fn: function) -> boolean'
+  summary: Своя консольная команда; коллбэк возвращает true, если команда обработана.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Требует включённой консоли (ConsoleEnablerMod).
+    Возврат false пропускает команду дальше в игру.
+
+- symbol: StaticFindObject
+  category: search
+  signature: 'StaticFindObject(fullPath: string) -> UObject'
+  summary: Найти уже загруженный объект по полному пути.
+  status: caution
+  verified: stand
+  example: |
+    local cls = StaticFindObject("/Script/SystemCore.UnlockResearchComponent")
+    if cls and cls:IsValid() then print("ok\n") end
+  pitfalls: |
+    Видит ТОЛЬКО загруженное в память: not_found по /Game-пути не означает, что пути нет.
+    Спайк 4 фазы 2: виджет главного меню не находится при загруженном игровом уровне.
+    Для объектов путь через точку (/Script/Pkg.Class), для функций — через двоеточие.
+
+- symbol: FindFirstOf
+  category: search
+  signature: 'FindFirstOf(className: string) -> UObject'
+  summary: Первый живой инстанс класса в GUObjectArray.
+  status: caution
+  verified: doc
+  example: |
+    local comp = FindFirstOf("UnlockResearchComponent")
+    if comp and comp:IsValid() then print(comp:GetFullName() .. "\n") end
+  pitfalls: |
+    Принимает короткое имя класса, а не путь.
+    При отсутствии инстансов возвращает НЕ nil, а обёртку вокруг nullptr: проверка
+    "if comp then" проходит, а первый же вызов метода падает с
+    "Tried calling a member function but the UObject instance is nullptr".
+    Единственная надёжная проверка — comp and comp:IsValid() (проверено 2026-08-29).
+    На этапе загрузки скрипта объектов ещё нет — вызов в теле main.lua почти всегда пустой.
+    Вызывай из хука, из RegisterInitGameStatePostHook или из периодической проверки.
+    Наследники учитываются: FindFirstOf("ArcoSystems") находит инстанс BP-наследника
+    ArcoSystems_Configured_C (проверено 2026-08-29).
+
+- symbol: FindAllOf
+  category: search
+  signature: 'FindAllOf(className: string) -> table|nil'
+  summary: Все живые инстансы класса.
+  status: caution
+  verified: stand
+  example: |
+    local all = FindAllOf("Actor") or {}
+    print("actors: " .. #all .. "\n")
+  pitfalls: |
+    При нуле совпадений возвращает nil, а НЕ пустую таблицу: #FindAllOf(...) падает
+    с "attempt to get length of a nil value". Пиши (FindAllOf(x) or {}).
+    CDO (Default__Class) в выдачу не попадают: класс, существующий только как CDO,
+    даёт nil — значит инстансов в мире действительно нет (проверено 2026-08-29).
+    Наследники учитываются: FindAllOf("Actor") даёт 6497, FindAllOf("ArcoSystems") находит
+    ArcoSystems_Configured_C. Имя базового класса — рабочий способ найти BP-наследника.
+    Обход всего массива объектов — не вызывай каждый тик.
+
+- symbol: ForEachUObject
+  category: search
+  signature: 'ForEachUObject(fn: function)'
+  summary: Обход всего GUObjectArray с коллбэком (object, chunkIndex, objectIndex).
+  status: broken
+  verified: stand
+  pitfalls: |
+    2026-08-29: полный обход уронил игру fatal error. На загруженном уровне это ~150 000
+    объектов, среди них помеченные к сборке мусора; GetFullName/IsA на таком объекте
+    обращается к освобождённой памяти. Проход с IsA по каждому объекту занял 10 с
+    игрового потока, следующий такой же проход убил процесс.
+    В рантайме мода не использовать вообще. Для разведки бери FindAllOf по конкретному
+    классу или хук на функцию, которая тебя интересует.
+    Если обход всё же неизбежен: оборачивай КАЖДОЕ обращение к объекту в pcall,
+    фильтруй по классу до вызова GetFullName и не запускай два прохода подряд.
+
+- symbol: FindObject
+  category: search
+  signature: 'FindObject(class: string|UClass, name?: string) -> UObject'
+  summary: Поиск объекта по классу и/или имени среди загруженных.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Как и StaticFindObject, видит только загруженное.
+
+- symbol: StaticConstructObject
+  category: objects
+  signature: 'StaticConstructObject(class: UClass, outer: UObject, name?: FName, flags?: integer, ...) -> UObject'
+  summary: Создание UObject в рантайме; на этом стенде — основа для UMG без ассетов.
+  status: caution
+  verified: doc
+  example: |
+    local widgetClass = StaticFindObject("/Script/UMG.UserWidget")
+    local widget = StaticConstructObject(widgetClass, UEHelpers.GetWorld())
+  pitfalls: |
+    Требует сигнатуры StaticConstructObject_Internal в ue4ss/UE4SS_Signatures/ —
+    без неё игра не запускается вовсе.
+    Вызывать только внутри ExecuteInGameThread.
+    Прежде чем строить свой UMG, проверь родные подсистемы: SystemCore.NotificationBoard,
+    SystemCore.NotificationWidgetBase, ProjectArco.NotificationSystem,
+    ProjectArco.ProblemIndicatorWidget — самодельный оверлей ломается при смене разрешения.
+
+- symbol: UObject:IsValid
+  category: objects
+  signature: 'obj:IsValid() -> boolean'
+  summary: Жив ли объект. Первая проверка после любого поиска.
+  status: ok
+  verified: stand
+  example: |
+    if obj and obj:IsValid() then print(obj:GetFullName() .. "\n") end
+  pitfalls: |
+    Само obj может быть nil, поэтому проверка пишется как "obj and obj:IsValid()".
+    Ссылка, сохранённая между уровнями, почти всегда становится невалидной.
+
+- symbol: UObject:GetFullName
+  category: objects
+  signature: 'obj:GetFullName() -> string'
+  summary: Полное имя объекта с классом и путём; основной способ понять, что именно найдено.
+  status: ok
+  verified: stand
+
+- symbol: UObject:GetFName
+  category: objects
+  signature: 'obj:GetFName() -> FName'
+  summary: Имя объекта как FName.
+  status: ok
+  verified: stand
+  example: |
+    print(obj:GetFName():ToString() .. "\n")
+  pitfalls: |
+    Возвращает FName, а не строку: без :ToString() конкатенация падает.
+
+- symbol: UObject:GetClass
+  category: objects
+  signature: 'obj:GetClass() -> UClass'
+  summary: Класс объекта.
+  status: ok
+  verified: stand
+  example: |
+    print(obj:GetClass():GetFName():ToString() .. "\n")
+
+- symbol: UObject:IsA
+  category: objects
+  signature: 'obj:IsA(class: string|UClass) -> boolean'
+  summary: Проверка принадлежности классу с учётом наследования.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Строковый аргумент — полный путь класса (/Script/Pkg.Class), а не короткое имя.
+
+- symbol: UObject:type
+  category: objects
+  signature: 'obj:type() -> string'
+  summary: Имя типа обёртки UE4SS (UObject, UClass, AActor, ...).
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Это тип обёртки, а не игровой класс: для класса нужен GetClass.
+
+- symbol: UObject.Property
+  category: objects
+  signature: 'obj.SomeProperty -> value; obj.SomeProperty = value'
+  summary: Прямой доступ к UPROPERTY по имени из индекса (ww_get_type).
+  status: caution
+  verified: upstream
+  example: |
+    local comp = FindFirstOf("UnlockResearchComponent")
+    local value = comp.researchProgress
+  pitfalls: |
+    Имя свойства регистрозависимо и берётся из ww_get_type, а не из строк бинарника.
+    Запись свойства — мутация UObject: только внутри ExecuteInGameThread.
+    Несуществующее имя даёт ошибку рантайма, а не nil.
+
+- symbol: UObject:Function
+  category: objects
+  signature: 'obj:SomeUFunction(args...) -> результат'
+  summary: Прямой вызов UFunction на объекте.
+  status: ok
+  verified: stand
+  example: |
+    local topic = comp:GetResearchTopic()
+  pitfalls: |
+    Сигнатуру бери из ww_get_function: порядок и число аргументов не угадываются.
+    Out-параметры возвращаются дополнительными значениями, а не через ссылку.
+    Вызов, меняющий состояние мира, оборачивай в ExecuteInGameThread.
+
+- symbol: RemoteUnrealParam:get
+  category: params
+  signature: 'param:get() -> value'
+  summary: Разворачивает параметр, пришедший в коллбэк хука.
+  status: ok
+  verified: stand
+  example: |
+    RegisterHook(path, function(Context, unlockId)
+      local name = unlockId:get()
+      print(name:ToString() .. "\n")
+    end)
+  pitfalls: |
+    Забытый :get() — самая частая ошибка: получишь userdata-обёртку вместо значения.
+    Для StructProperty :get() отдаёт UScriptStruct, поля читаются по имени (спайк 1 фазы 2).
+    Context:get() даёт объект, на котором вызвана функция (self).
+
+- symbol: RemoteUnrealParam:set
+  category: params
+  signature: 'param:set(value)'
+  summary: Подмена значения параметра или возврата из pre/post-хука.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    В pre-хуке меняет то, что увидит оригинальная функция; в post-хуке входные параметры
+    менять уже поздно, но можно подменить возврат.
+    Типы должны совпадать: FName нельзя присвоить Lua-строку.
+
+- symbol: ExecuteInGameThread
+  category: threading
+  signature: 'ExecuteInGameThread(fn: function)'
+  summary: Единственный безопасный способ трогать UObject из асинхронного контекста.
+  status: ok
+  verified: stand
+  example: |
+    ExecuteWithDelay(1000, function()
+      ExecuteInGameThread(function()
+        local comp = FindFirstOf("UnlockResearchComponent")
+        if comp and comp:IsValid() then print("found\n") end
+      end)
+    end)
+  pitfalls: |
+    Коллбэк исполняется АСИНХРОННО — ставится в очередь игрового потока, а не выполняется
+    на месте (спайк 2 фазы 2). Возврата из ExecuteInGameThread нет: результат передавай
+    через замыкание или коллбэк.
+    Работа с UObject вне игрового потока — краш без внятного стека, воспроизводящийся
+    не каждый раз.
+    Коллбэки RegisterHook уже в игровом потоке: оборачивать их не нужно.
+
+- symbol: ExecuteWithDelay
+  category: threading
+  signature: 'ExecuteWithDelay(ms: integer, fn: function)'
+  summary: Отложенный вызов; на нём же строится периодический опрос.
+  status: ok
+  verified: stand
+  example: |
+    local function tick()
+      ExecuteInGameThread(check)
+      ExecuteWithDelay(2000, tick)
+    end
+    ExecuteWithDelay(500, tick)
+  pitfalls: |
+    Исполняется не в игровом потоке: любое касание UObject внутри — через ExecuteInGameThread.
+    Цепочка рвётся, если внутри коллбэка вылетела необработанная ошибка: оборачивай тело
+    в pcall, иначе мод замолкает до перезапуска игры.
+    Отменить запланированный вызов нечем — держи флаг поколения и проверяй его в начале
+    коллбэка, иначе после перезагрузки мода тикать будут обе копии.
+
+- symbol: ExecuteAsync
+  category: threading
+  signature: 'ExecuteAsync(fn: function)'
+  summary: Выполнить функцию вне игрового потока.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    UObject внутри трогать нельзя. Практически всегда нужен ExecuteInGameThread, а не это.
+
+- symbol: LoopAsync
+  category: threading
+  signature: 'LoopAsync(ms: integer, fn: function)'
+  summary: Периодический вызов; коллбэк возвращает true, чтобы остановить цикл.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Исполняется вне игрового потока — как и ExecuteWithDelay.
+    Переживает перезагрузку мода в dev-цикле: остановить можно только возвратом true,
+    поэтому храни флаг поколения и возвращай true, когда мод перезагрузился.
+
+- symbol: RegisterKeyBind
+  category: input
+  signature: 'RegisterKeyBind(key: Key, modifiers?: table, fn: function)'
+  summary: Горячая клавиша.
+  status: ok
+  verified: doc
+  example: |
+    RegisterKeyBind(Key.F8, { ModifierKey.CONTROL }, function()
+      ExecuteInGameThread(dumpState)
+    end)
+  pitfalls: |
+    Коллбэк исполняется не в игровом потоке.
+    Повторная регистрация той же комбинации при перезагрузке мода даёт двойное срабатывание;
+    проверяй IsKeyBindRegistered.
+    Клавиши, занятые игрой и другими модами, перехватываются молча.
+
+- symbol: Key
+  category: input
+  signature: 'Key.A ... Key.F12, Key.NUM_ONE, ...'
+  summary: Таблица кодов клавиш для RegisterKeyBind.
+  status: ok
+  verified: doc
+
+- symbol: ModifierKey
+  category: input
+  signature: 'ModifierKey.CONTROL | ModifierKey.SHIFT | ModifierKey.ALT'
+  summary: Модификаторы для RegisterKeyBind.
+  status: ok
+  verified: doc
+
+- symbol: IsKeyBindRegistered
+  category: input
+  signature: 'IsKeyBindRegistered(key: Key, modifiers?: table) -> boolean'
+  summary: Проверка занятости комбинации до регистрации.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Единственный способ не повесить второй обработчик на ту же клавишу при перезагрузке мода.
+
+- symbol: UEHelpers.GetWorld
+  category: ue-helpers
+  signature: "local UEHelpers = require('UEHelpers'); UEHelpers.GetWorld() -> UWorld"
+  summary: Текущий UWorld; в главном меню это карта меню, а не игровой уровень.
+  status: ok
+  verified: stand
+  example: |
+    local UEHelpers = require("UEHelpers")
+    local world = UEHelpers.GetWorld()
+    if world and world:IsValid() then print(world:GetFullName() .. "\n") end
+  pitfalls: |
+    UEHelpers — бандл-мод UE4SS; require работает, потому что его Scripts лежат в package.path.
+    Отличать игровой уровень от меню по имени мира (MainMenu в имени).
+
+- symbol: UEHelpers.GetPlayerController
+  category: ue-helpers
+  signature: 'UEHelpers.GetPlayerController() -> APlayerController'
+  summary: Контроллер игрока.
+  status: caution
+  verified: stand
+  pitfalls: |
+    В Whiskerwood контроллер блюпринтовый (BP_PlayerController_Play_C), и вызов
+    ConsoleCommand на нём падает с "attempt to call a TrivialObject value".
+    Для консольных команд используй KismetSystemLibrary.
+
+- symbol: UEHelpers.GetKismetSystemLibrary
+  category: ue-helpers
+  signature: 'UEHelpers.GetKismetSystemLibrary() -> UKismetSystemLibrary'
+  summary: CDO KismetSystemLibrary; рабочий путь к консольным командам и утилитам.
+  status: ok
+  verified: stand
+  example: |
+    local ksl = UEHelpers.GetKismetSystemLibrary()
+    ksl:ExecuteConsoleCommand(UEHelpers.GetWorld(), "stat fps", nil)
+
+- symbol: UEHelpers.GetGameplayStatics
+  category: ue-helpers
+  signature: 'UEHelpers.GetGameplayStatics() -> UGameplayStatics'
+  summary: 'CDO GameplayStatics: поиск акторов, пауза, спавн.'
+  status: caution
+  verified: upstream
+
+- symbol: ExecuteConsoleCommand
+  category: console
+  signature: 'ksl:ExecuteConsoleCommand(world: UWorld, command: string, controller: nil)'
+  summary: Отправка команды в консоль игры из Lua.
+  status: ok
+  verified: stand
+  pitfalls: |
+    Требует загруженного уровня: без мира команда не уходит.
+    Вывод команды в Lua не возвращается — читай его через ww_game_log.
+
+- symbol: Arco_ExecCommands
+  category: console
+  signature: 'Arco_GiveResource | Arco_GiveScience | Arco_GiveUnlock | Arco_UnlockAll | Arco_NoCost | Arco_SetTimeOfDay | Arco_SpawnShip | Arco_KillSelectedWhisker | ...'
+  summary: Отладочные exec-команды, оставшиеся в шиппинг-сборке; готовый инструмент тестирования модов.
+  status: ok
+  verified: doc
+  example: |
+    ww_game_console("Arco_UnlockAll")
+  pitfalls: |
+    Меняют состояние сохранения — тестируй на отдельном сейве.
+    Точные аргументы ищи через ww_find_symbol по имени команды.
+
+- symbol: print
+  category: logging
+  signature: 'print(text: string)'
+  summary: Запись в UE4SS.log и в консоль UE4SS.
+  status: caution
+  verified: stand
+  example: |
+    print("[research-notifier] started\n")
+  pitfalls: |
+    Перевод строки НЕ добавляется: без "\n" в конце строки лога склеиваются.
+    Ставь префикс с именем мода — ww_game_log фильтрует по нему.
+    Конкатенация с FName/FText/FString без :ToString() падает.
+
+- symbol: FName
+  category: text
+  signature: 'name:ToString() -> string'
+  summary: Имя движка; так возвращается, в частности, GetResearchTopic.
+  status: ok
+  verified: stand
+  example: |
+    local topic = comp:GetResearchTopic()
+    if topic:ToString() == "None" then print("нет активного исследования\n") end
+  pitfalls: |
+    Пустое значение — это NAME_None, чей ToString() даёт "None", а не пустую строку и не nil.
+    Сравнивать FName со строкой напрямую нельзя — только после ToString().
+
+- symbol: FText
+  category: text
+  signature: 'text:ToString() -> string'
+  summary: Локализуемый текст UI.
+  status: caution
+  verified: upstream
+  pitfalls: |
+    Собрать FText из Lua-строки штатным способом нельзя; текст для UI получай
+    через ww_resolve_loc и передавай уже готовой строкой.
+
+- symbol: FString
+  category: text
+  signature: 'str:ToString() -> string'
+  summary: Строка движка.
+  status: ok
+  verified: upstream
+  pitfalls: |
+    Не путать с Lua-строкой: строковые параметры в хуках приходят как FString и требуют :ToString().
+
+- symbol: Utf8String
+  category: text
+  signature: 'Utf8String(...)'
+  summary: Не поддержан UE4SS на UE 5.6 в этой сборке.
+  status: broken
+  verified: doc
+  pitfalls: |
+    Использовать нельзя. Русский текст резолвится на стороне MCP через ww_resolve_loc,
+    в Lua уходит уже готовая строка.
+
+- symbol: RuntimeUMG
+  category: ui
+  signature: 'StaticConstructObject(UserWidget) -> WidgetTree -> CanvasPanel -> дочерние виджеты'
+  summary: Сборка UMG в рантайме без единого ассета.
+  status: caution
+  verified: doc
+  pitfalls: |
+    Сначала проверь родные подсистемы уведомлений игры (ww_find_symbol NotificationBoard,
+    ProblemIndicator): самодельный оверлей выглядит чужеродно и ломается при смене разрешения.
+    Вся сборка — внутри ExecuteInGameThread.
+    Виджет, созданный до загрузки уровня, умирает вместе с картой меню.
+
+- symbol: require
+  category: mod
+  signature: "require('ww.log')"
+  summary: Подключение общего кода из lib/ монорепозитория модов.
+  status: ok
+  verified: stand
+  example: |
+    local log = require("ww.log").for_mod("research-notifier")
+  pitfalls: |
+    package.path расширяется мостом WWBridge при старте (mods_repo/lib/?.lua);
+    без включённого WWBridge require из lib не найдёт модуль.
+    В dev-цикле WWBridge сбрасывает package.loaded для модулей ww.*, чтобы правки
+    в lib подхватывались перезагрузкой мода.
+
+- symbol: ModLayout
+  category: mod
+  signature: 'Mods/<ModName>/Scripts/main.lua + строка "<ModName> : 1" в Mods/mods.txt'
+  summary: Раскладка Lua-мода UE4SS.
+  status: ok
+  verified: stand
+  pitfalls: |
+    Точка входа обязана называться Scripts/main.lua.
+    Мод без строки в mods.txt не загружается молча.
+    Порядок строк в mods.txt задаёт порядок загрузки.
+    Развёртывание делает ww_deploy_mod — вручную junction и mods.txt не правь.
+
+- symbol: io.open
+  category: mod
+  signature: "io.open(path, 'rb') / io.lines(path)"
+  summary: Стандартный io Lua доступен; на нём построен файловый IPC моста.
+  status: ok
+  verified: stand
+  pitfalls: |
+    Относительные пути резолвятся от рабочего каталога игры — используй абсолютные.
+    На Windows переименование поверх существующего файла не проходит: сначала os.remove.
+
+- symbol: MoveBuilding
+  category: absent-api
+  signature: '—'
+  summary: Переноса зданий в игре нет; нативной функции не существует.
+  status: absent
+  verified: doc
+  pitfalls: |
+    Подтверждено и по строкам, и по рефлексии. Есть только EnterMode_Bulldoze,
+    placeBuilding, CanPlace, GetGridActorCost, constructionSiteTemplate.
+    Перенос эмулируется сносом и постановкой со всеми краевыми случаями:
+    возврат ресурсов, жильцы, содержимое склада, назначения рабочих, привязки труб и дорог.
+
+- symbol: startResearch
+  category: absent-api
+  signature: '—'
+  summary: Имена startResearch, cancelResearch, canResearch, isResearchActive есть в бинарнике как строки, но отсутствуют в рефлексии.
+  status: absent
+  verified: stand
+  pitfalls: |
+    Хук на них не выбрасывает ошибку — мод молча ничего не делает.
+    Настоящий API: SystemCore.UnlockResearchComponent.SetResearchTopic, IsResearched,
+    GetResearchTopic. Любое имя, взятое из strings, проверяй через ww_verify_hook.

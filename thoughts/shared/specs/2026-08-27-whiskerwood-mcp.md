@@ -1039,14 +1039,41 @@ MCP-клиента — и второй файл затирает первый, �
 
 ### Фаза 4 — Авторинг и приёмка
 
-- [ ] Наполнить `data/lua-api.yaml` (~40 символов UE4SS API + грабли из §9)
-- [ ] `lua-analyzer.ts` на `luaparse`
-- [ ] `ww_scaffold_mod`, `ww_generate_hook`, `ww_validate_mod`, `ww_deploy_mod`
-- [ ] Монорепо `WhiskerWood_Mods`: `CLAUDE.md`, `.mcp.json`, `lib/`
-- [ ] MCP Prompts `ww:new-mod`, `ww:fix-after-patch`
+- [x] Наполнить `data/lua-api.yaml` (~40 символов UE4SS API + грабли из §9) — **50 записей**,
+  14 категорий, поле `verified` (stand/doc/upstream) и `status` (ok/caution/broken/absent);
+  читается сервером на лету по mtime, а не запекается в профиль версии
+- [x] `lua-analyzer.ts` на `luaparse` — плюс разрешение алиасов
+  (`local register = WWRegisterHook or RegisterHook`) и обёрток `lib/ww/obj.lua`, без чего
+  рекомендуемая же идиома выводила все хуки из-под проверки
+- [x] `ww_scaffold_mod`, `ww_generate_hook`, `ww_validate_mod`, `ww_deploy_mod` — плюс
+  `ww_lua_api` из §9.4; всего в сервере 19 инструментов
+- [x] Монорепо `WhiskerWood_Mods`: `CLAUDE.md`, `.mcp.json`, `lib/ww/{log,obj,poll}.lua`
+- [x] MCP Prompts `ww:new-mod`, `ww:fix-after-patch`
 
 **Готово, когда:** агент с нуля собирает Research Notifier из §3 — без правок человеком,
 с прохождением `ww_validate_mod` и подтверждением работы через bridge.
+
+**Статус 2026-08-29: инструменты готовы и проверены на живой игре, приёмка НЕ закрыта.**
+
+Закрыто: мод `mods/research-notifier` собран целиком через инструменты сервера
+(`find_symbol` → `get_type` → `get_function` → `resolve_loc` → `verify_hook` →
+`scaffold_mod` → `generate_hook`), проходит `ww_validate_mod` с нулём ошибок и
+предупреждений, разворачивается в запущенную игру через `ww_deploy_mod mode=dev`
+(`hooks=1`, три перезагрузки подряд без накопления) и корректно читает живое состояние:
+`ProjectArco.ArcoSystems.GetResearchInfo().ResearchState.activeResearch = None` при двух
+активных лабораториях — совпало с фактическим состоянием игры.
+
+Не закрыто: **уведомления в HUD нет**. Родная подсистема `SystemCore.NotificationBoard`
+принимает элемент (`PushItem` со структурой из Lua-таблицы работает, кириллица проходит
+round-trip), но в 0.6.190.0 её никто не разбирает: хуки на `PushItem`,
+`RetrievePendingItem` и `HasPendingItem` дают ноль вызовов со стороны игры, живых
+`NotificationWidgetBase` нет. Мод сообщает о состоянии только в лог. До появления рабочего
+канала показа критерий §3 не выполнен.
+
+Побочно: `SystemCore.UnlockResearchComponent`, на который опиралась первая версия мода,
+в сессии не инстанцируется вовсе — только CDO. Это ловится исключительно мостом и является
+самой наглядной иллюстрацией §12 «фаза 2 раньше данных». Детали, включая краш игры от
+`ForEachUObject`, — в `2026-08-29-phase4-results.md`.
 
 ### Фаза 5 — Долговременная эксплуатация
 

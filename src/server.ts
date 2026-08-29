@@ -17,6 +17,12 @@ import { handleGetDataTable } from './tools/get-datatable'
 import { handleResolveLoc } from './tools/resolve-loc'
 import { handleFindAsset } from './tools/find-asset'
 import { handleExtractAsset } from './tools/extract-asset'
+import { handleLuaApi } from './tools/lua-api'
+import { handleScaffoldMod, TEMPLATES } from './tools/scaffold-mod'
+import { handleGenerateHook } from './tools/generate-hook'
+import { handleValidateMod } from './tools/validate-mod'
+import { handleDeployMod } from './tools/deploy-mod'
+import { registerPrompts } from './prompts'
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false }
 const LIVE_READ = { readOnlyHint: true, openWorldHint: true }
@@ -309,5 +315,93 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge(async (ctx, args) => handleGameLog(ctx, config, args)),
   )
 
+
+  server.registerTool(
+    'ww_lua_api',
+    {
+      title: 'Справочник UE4SS Lua API',
+      description:
+        'Сигнатуры, примеры и грабли UE4SS Lua API: хуки, поиск объектов, потоки, ввод, текст, раскладка мода. Без аргументов — оглавление по категориям. Вызывай ПЕРЕД написанием кода мода: здесь записаны отличия этой сборки (ExecuteInGameThread асинхронный, FindAllOf при нуле совпадений даёт nil, Utf8String не работает). Классы и функции самой игры ищи через ww_find_symbol.',
+      inputSchema: {
+        symbol: z.string().optional().describe('Имя символа UE4SS, например RegisterHook или ExecuteInGameThread'),
+        category: z
+          .string()
+          .optional()
+          .describe('Категория: hooks | search | objects | params | threading | input | ue-helpers | console | logging | text | ui | mod | dev | absent-api'),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrapBridge(async (ctx, args) => handleLuaApi(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_scaffold_mod',
+    {
+      title: 'Создать каркас мода',
+      description:
+        'Создаёт структуру Lua-мода UE4SS: mod.json, Scripts/main.lua из шаблона, подключение общей библиотеки lib/. Шаблоны: hook (перехват UFunction), ui (реакция на состояние с показом в UI), keybind (действие по клавише), diagnostic (разведка живой игры). mod_root обязан лежать внутри sandboxRoots, обычно <modsRepo>/mods/<имя>. Существующий код не перезаписывает.',
+      inputSchema: {
+        mod_root: z.string().describe('Каталог мода, например D:/Whiskerwood_IO/WhiskerWood_Mods/mods/research-notifier'),
+        name: z.string().optional().describe('Имя мода; по умолчанию имя каталога. Станет именем папки в ue4ss/Mods'),
+        template: z.enum(TEMPLATES).describe('Шаблон точки входа'),
+        version: versionParam,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrap((ctx, args) => handleScaffoldMod(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_generate_hook',
+    {
+      title: 'Скелет хука по сигнатуре из индекса',
+      description:
+        'Готовый код RegisterHook с реальной сигнатурой функции из индекса: правильный hook_path, распаковка каждого параметра через :get() с учётом его типа, ToString для FName/FString/FText. Используй вместо ручного написания хука — путь и арность коллбэка тогда гарантированно совпадают с рефлексией.',
+      inputSchema: {
+        function_path: z.string().describe('Путь функции в любой форме; удобнее всего взять из ww_verify_hook'),
+        kind: z.enum(['pre', 'post', 'both']).optional().describe('Какой коллбэк генерировать; по умолчанию post'),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrap((ctx, args) => handleGenerateHook(ctx, args)),
+  )
+
+  server.registerTool(
+    'ww_validate_mod',
+    {
+      title: 'Проверка мода',
+      description:
+        'Разбирает все .lua мода в AST и сверяет с индексом: синтаксис, каждый литеральный путь RegisterHook/StaticFindObject/FindFirstOf/FindAllOf/NotifyOnNewObject, форма пути (двоеточие против точки), арность коллбэков хуков, коллизии с соседними модами репозитория, известные грабли UE4SS. Динамически собранные пути помечаются отдельно как непроверяемые. Вызывай ПЕРЕД ww_deploy_mod и после каждой правки. live: true дополнительно пробивает пути через мост в живой игре.',
+      inputSchema: {
+        mod_root: z.string().describe('Каталог мода'),
+        live: z.boolean().optional().describe('Дополнительно пробить пути в запущенной игре'),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrapAsync((ctx, args) => handleValidateMod(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_deploy_mod',
+    {
+      title: 'Развернуть мод',
+      description:
+        'mode=dev — загрузить мод в запущенную игру через мост WWBridge прямо из каталога разработки, со снятием хуков предыдущей загрузки; повторный вызов перезагружает мод без перезапуска игры. mode=release — junction (при отказе копия) в ue4ss/Mods/<Имя> плюс строка в mods.txt; подхватится при следующем старте игры. Сначала прогони ww_validate_mod.',
+      inputSchema: {
+        mod_root: z.string().describe('Каталог мода'),
+        mode: z.enum(['dev', 'release']).optional().describe('По умолчанию dev'),
+        version: versionParam,
+      },
+      annotations: LIVE_WRITE,
+    },
+    wrapBridge((ctx, args) => handleDeployMod(ctx, config, args)),
+  )
+
+  registerPrompts(server)
+
   return server
 }
+
