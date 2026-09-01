@@ -78,6 +78,10 @@
     Правильный способ поймать объект, которого ещё нет на момент загрузки скрипта,
     вместо FindFirstOf в теле мода.
     Снять этот коллбэк нечем — он переживает перезагрузку мода в dev-цикле.
+    Он же — штатная инвалидация кеша списка вместо повторного FindAllOf: коллбэк ставит
+    флаг «список устарел», сам скан идёт уже по запросу (obj.all_of_cached в lib/ww).
+    Коллбэк приходит вне игрового потока — внутри только флаг, без обращений к UObject.
+    Состояние подписки держи в _G: она переживает dev-перезагрузку, а модуль — нет.
 
 - symbol: RegisterInitGameStatePostHook
   category: hooks
@@ -145,6 +149,8 @@
     Видит ТОЛЬКО загруженное в память: not_found по /Game-пути не означает, что пути нет.
     Спайк 4 фазы 2: виджет главного меню не находится при загруженном игровом уровне.
     Для объектов путь через точку (/Script/Pkg.Class), для функций — через двоеточие.
+    Идёт по хэшу: 0.034 мс на вызов, на три порядка дешевле FindFirstOf (замер 2026-09-01).
+    Для классов и ассетов это предпочтительный способ поиска.
 
 - symbol: FindFirstOf
   category: search
@@ -165,6 +171,10 @@
     Вызывай из хука, из RegisterInitGameStatePostHook или из периодической проверки.
     Наследники учитываются: FindFirstOf("ArcoSystems") находит инстанс BP-наследника
     ArcoSystems_Configured_C (проверено 2026-08-29).
+    Линейный обход GUObjectArray: 11.5–12.3 мс на вызов при 80 500 объектов
+    (замер os.clock, 2026-09-01). В теле poll.every или частого хука это микрофриз —
+    два-три таких вызова на тике в 200 мс съедают каждый пятый кадр при 60 FPS.
+    В периодическом коде только obj.first_of_cached из lib/ww.
 
 - symbol: FindAllOf
   category: search
@@ -182,7 +192,10 @@
     даёт nil — значит инстансов в мире действительно нет (проверено 2026-08-29).
     Наследники учитываются: FindAllOf("Actor") даёт 6497, FindAllOf("ArcoSystems") находит
     ArcoSystems_Configured_C. Имя базового класса — рабочий способ найти BP-наследника.
-    Обход всего массива объектов — не вызывай каждый тик.
+    Обход всего массива объектов: 12.4 мс на вызов при 80 500 объектов (замер 2026-09-01) —
+    каждый тик не вызывать. Подсчёт по уже полученному списку стоит 0.01 мс: дорог поиск,
+    а не работа с результатом. Держи список в obj.all_of_cached из lib/ww и инвалидируй
+    его по NotifyOnNewObject.
 
 - symbol: ForEachUObject
   category: search
@@ -542,6 +555,8 @@
     (/Script/Engine.KismetTextLibrary), CDO не нужен — так путь виден ww_validate_mod.
     Передавать Lua-строку напрямую в параметр FText нельзя: SetToolTipText("...")
     уронил игру (AV 0x70).
+    Так ставится текст обычного TextBlock. Для LocTextBlock этот путь не годится:
+    виджет перечитывает свой Key при сборке Slate — см. запись LocTextBlock.
 
 - symbol: FString
   category: text
@@ -561,6 +576,44 @@
   pitfalls: |
     Использовать нельзя. Русский текст резолвится на стороне MCP через ww_resolve_loc,
     в Lua уходит уже готовая строка.
+
+- symbol: LocTextBlock
+  category: text
+  signature: 'block:SetKey(FName) / block.Key -> FName'
+  summary: Текстовый блок игры, который сам резолвит строку по ключу локализации.
+  status: caution
+  verified: stand
+  example: |
+    local lm = FindFirstOf("LocManager")
+    lm.State.keyToWord:Add(FName("ww.rn.title"), "Нет Активных Исследований!")
+    detail.LocTitle:SetKey(FName("ww.rn.title"))
+  pitfalls: |
+    SetText поверх LocTextBlock не держится: при сборке Slate виджет заново резолвит
+    своё поле Key и возвращает игровую строку. Внешне это выглядит как подмена текста
+    на глазах у игрока, а лечение повторным SetText через ExecuteWithDelay её и создаёт.
+    Ставить надо ключ: SetKey нативный, ставит и Key, и текст, поэтому любая пересборка
+    Slate резолвит то же самое. Свой текст кладётся в LocManager.State.keyToWord.
+    Проверено на стенде: тултип ProblemSummaryBannerWidget_C, поля Text_Detail_C.LocTitle
+    и LocDesc. Обычного UMG.TextBlock это не касается — там SetText держится.
+
+- symbol: keyToWord
+  category: text
+  signature: 'LocManager.State.keyToWord:Add(FName, FString)'
+  summary: Таблица локализации игры; открыта на запись, через неё мод регистрирует свои строки.
+  status: ok
+  verified: stand
+  example: |
+    local lm = FindFirstOf("LocManager")
+    lm.State.keyToWord:Add(FName("ww.rn.desc"), "Первое предложение.\n\nВторое предложение.")
+    -- дальше строку отдаёт сама игра: lm:GetWordFromKey(FName("ww.rn.desc"))
+  pitfalls: |
+    Своим ключам нужно собственное пространство имён (ww.<мод>.<что>): Add перезаписывает
+    совпадающий ключ, и попадание в игровой (problem.lowfood и т.п.) сломает штатный текст.
+    Таблица пересобирается при смене языка — ключи надо регистрировать заново: сверяй
+    lm:GetActiveLanguage():ToString() с запомненным и подстраховывайся lm:HasKey(FName).
+    Неизвестный ключ GetWordFromKey отдаёт пустой строкой, а не именем ключа —
+    трюк "текст вместо ключа" не работает.
+    Многострочность проходит: между абзацами игра сама использует \n\n.
 
 - symbol: RuntimeUMG
   category: ui

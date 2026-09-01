@@ -10,6 +10,8 @@ local WATCH = {
   "UnlockResearchComponent",
 }
 
+-- Отчёт разовый, поэтому некешированный obj.all_of здесь уместен. В периодическом
+-- коде он стоил бы ~12 мс на класс — там нужен obj.all_of_cached.
 local function report()
   for _, className in ipairs(WATCH) do
     local all = obj.all_of(className)

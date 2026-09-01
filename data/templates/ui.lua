@@ -3,18 +3,20 @@
 --   ww_find_symbol("NotificationBoard"), ww_find_symbol("ProblemIndicator")
 -- Самодельный UMG выглядит чужеродно и ломается при смене разрешения.
 -- Текст берётся из ww_resolve_loc готовой строкой: Utf8String на 5.6 не работает.
+-- В теле опроса поиск объектов только через obj.*_cached: FindFirstOf и FindAllOf
+-- обходят весь GUObjectArray и стоят ~12 мс на вызов.
 
 local MOD = "{{NAME}}"
 local log = require("ww.log").for_mod(MOD)
 local obj = require("ww.obj")
 local poll = require("ww.poll")
 
-local CHECK_EVERY_MS = 2000
+local CHECK_EVERY_MS = 500
 local shown = false
 
 -- Возвращает true, когда состояние требует показа уведомления.
 local function needsNotice()
-  local comp = obj.first_of("ClassNameFromWwFindSymbol")
+  local comp = obj.first_of_cached("ClassNameFromWwFindSymbol")
   if not comp then return false end
   return false
 end
