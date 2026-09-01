@@ -24,6 +24,7 @@ import { handleScaffoldMod, TEMPLATES } from './tools/scaffold-mod'
 import { handleGenerateHook } from './tools/generate-hook'
 import { handleValidateMod } from './tools/validate-mod'
 import { handleDeployMod } from './tools/deploy-mod'
+import { handlePackageMod, PackageModArgs } from './tools/package-mod'
 import { handleDiffVersions } from './tools/diff-versions'
 import { handleMemoryWakeup } from './tools/memory-wakeup'
 import { handleMemorySearch } from './tools/memory-search'
@@ -458,6 +459,21 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: LIVE_WRITE,
     },
     wrapBridge((ctx, args) => handleDeployMod(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_package_mod',
+    {
+      title: 'Собрать релизный zip',
+      description:
+        'Релизная сборка мода для раздачи игрокам: одна папка <Имя>/ со всеми .lua и mod.json, внутрь неё вендорится общая библиотека lib/ (Scripts/ww/*.lua) — у игрока нет WWBridge, расширяющего package.path, и без вендоринга require("ww.log") не найдётся. Рядом кладётся УСТАНОВКА.txt (свой из корня мода или сгенерированный). Архив пишется в <modsRepo>/dist и никогда не перетирает существующий: при совпадении имени добавляется суффикс -b2, -b3. Версия берётся из mod.json, mod_version её задаёт и сохраняет обратно. Это не установка в игру — для неё ww_deploy_mod.',
+      inputSchema: {
+        mod_root: z.string().describe('Каталог мода'),
+        mod_version: z.string().optional().describe('Версия релиза вида 1.2.3; по умолчанию version из mod.json или 1.0.0'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrapPlain((args: PackageModArgs) => handlePackageMod(config, args)),
   )
 
   server.registerTool(

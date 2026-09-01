@@ -13,6 +13,7 @@ export interface ModMeta {
   created_at: string
   game_version: string
   description?: string
+  version?: string
 }
 
 export interface ModProject {
@@ -48,6 +49,7 @@ export function readModMeta(root: string): ModMeta | null {
       created_at: typeof raw.created_at === 'string' ? raw.created_at : 'unknown',
       game_version: typeof raw.game_version === 'string' ? raw.game_version : 'unknown',
       ...(typeof raw.description === 'string' ? { description: raw.description } : {}),
+      ...(typeof raw.version === 'string' ? { version: raw.version } : {}),
     }
   } catch {
     return null
