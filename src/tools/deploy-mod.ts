@@ -5,7 +5,7 @@ import { renderAiText, Scalar } from '../utils/ai-text'
 import { PathSandboxError } from '../utils/path-sandbox'
 import { loadModProject, ModProject } from '../utils/mod-project'
 import { analyzeLua } from '../utils/lua-analyzer'
-import { enableInModsTxt, linkModDir } from '../utils/ue4ss-deploy'
+import { enableInModsTxt, linkModDir, linkSharedLibs } from '../utils/ue4ss-deploy'
 import { getBridge } from '../utils/bridge-client'
 import { bridgeFailureFields, echoFields } from './bridge-common'
 
@@ -101,6 +101,7 @@ export async function handleDeployMod(ctx: GameContext | null, config: ServerCon
   const targetDir = `${config.ue4ssDir}/Mods/${mod.name}`
   const linkMode = linkModDir(mod.root, targetDir)
   const modsTxtState = enableInModsTxt(`${config.ue4ssDir}/Mods/mods.txt`, mod.name)
+  const shared = linkSharedLibs(config.modsRepo, config.ue4ssDir)
 
   return report(ctx, {
     status: 'ok',
@@ -109,6 +110,7 @@ export async function handleDeployMod(ctx: GameContext | null, config: ServerCon
     target: targetDir,
     link: linkMode,
     mods_txt: modsTxtState,
+    shared_libs: shared.namespaces.length > 0 ? `${shared.namespaces.join(', ')} (${shared.mode})` : 'нет lib/',
     hint:
       linkMode === 'junction'
         ? 'junction: правки в репозитории видны игре сразу, но UE4SS читает Lua при старте — перезапусти игру'

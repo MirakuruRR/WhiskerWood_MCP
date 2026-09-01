@@ -11,6 +11,8 @@ import { handleVerifyHook } from './tools/verify-hook'
 import { handleIndexStatus } from './tools/index-status'
 import { handleGameStatus } from './tools/game-status'
 import { handleGameEval } from './tools/game-eval'
+import { handleUiTree } from './tools/ui-tree'
+import { handleTraceCalls } from './tools/trace-calls'
 import { handleGameConsole } from './tools/game-console'
 import { handleGameLog } from './tools/game-log'
 import { handleGetDataTable } from './tools/get-datatable'
@@ -295,6 +297,46 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: LIVE_WRITE,
     },
     wrapBridge((ctx, args) => handleGameEval(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_ui_tree',
+    {
+      title: 'Дерево виджетов',
+      description:
+        'Дамп поддерева UMG живой игры: класс, видимость, текстура кисти, текст и тип слота по каждому виджету. Первый инструмент, когда надо понять устройство экрана или найти контейнер для своего виджета. Без аргументов — дерево PlayHud.',
+      inputSchema: {
+        root: z.string().optional().describe('Класс владельца для FindFirstOf, по умолчанию PlayHud'),
+        field: z
+          .string()
+          .optional()
+          .describe('Поле-виджет у владельца, с которого начать (например ImportantAgentModifiers)'),
+        depth: z.number().int().positive().max(20).optional().describe('Глубина обхода, по умолчанию 6'),
+        version: versionParam,
+      },
+      annotations: LIVE_READ,
+    },
+    wrapBridge((ctx, args) => handleUiTree(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_trace_calls',
+    {
+      title: 'Счётчик вызовов UFunction',
+      description:
+        'Вешает хуки на указанные функции, ждёт заданное окно и отдаёт число вызовов каждой. Нужен, чтобы понять, кто и как часто дёргает функцию, и вызывается ли она вообще: чисто нативные C++ -> C++ вызовы не ловятся и дадут ноль. Пути бери из hook_path в ответе ww_verify_hook.',
+      inputSchema: {
+        paths: z.array(z.string()).min(1).max(10).describe('Пути функций в форме hook_path'),
+        seconds: z.number().int().positive().max(120).optional().describe('Окно наблюдения, по умолчанию 10'),
+        capture_args: z
+          .boolean()
+          .optional()
+          .describe('Дополнительно записать до 20 образцов: владелец вызова и первый аргумент'),
+        version: versionParam,
+      },
+      annotations: LIVE_WRITE,
+    },
+    wrapAsync((ctx, args) => handleTraceCalls(ctx, config, args)),
   )
 
   server.registerTool(

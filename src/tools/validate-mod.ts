@@ -120,6 +120,20 @@ function checkHookPath(
 
   const expected = expectedArity(ctx, obj.path)
   for (const cb of ref.callbacks) {
+    if (cb.slot === 'post' && obj.hook_path.startsWith('/Game/')) {
+      out.push({
+        file,
+        line: cb.line,
+        column: 1,
+        severity: 'warn',
+        code: 'post_hook_on_blueprint',
+        message: `${obj.hook_path}: у блюпринтовых функций post-коллбэк на стенде не вызывался — сработает только pre`,
+        extra: {
+          workaround: 'лови вызов в pre, а правку объекта откладывай через ExecuteWithDelay + ExecuteInGameThread',
+          pitfalls_via: 'ww_lua_api symbol=RegisterHook',
+        },
+      })
+    }
     if (cb.hasVararg) continue
     if (cb.params > expected) {
       out.push({
@@ -140,6 +154,13 @@ function checkObjectPath(ctx: GameContext, ref: Reference, file: string, out: Fi
   const obj = findObject(ctx, literal)
   const at = { file, line: ref.line, column: ref.column }
   if (!obj) {
+    const asset = ctx.db
+      .query("SELECT asset_path FROM assets WHERE (asset_path || '.' || name) = ? COLLATE NOCASE LIMIT 1")
+      .get(literal) as { asset_path: string } | null
+    if (asset) {
+      probeTargets.add(literal)
+      return
+    }
     out.push({
       ...at,
       severity: literal.startsWith('/Game/') ? 'warn' : 'error',

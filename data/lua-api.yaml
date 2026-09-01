@@ -29,6 +29,13 @@
     (Actor:K2_SetActorLocation, UserWidget:Tick) на стенде не сработали за 12 с игры.
     В dev-цикле через ww_deploy_mod mode=dev используй WWRegisterHook, иначе хуки
     накапливаются с каждой перезагрузкой и коллбэк срабатывает N раз.
+    postFn НЕ вызывается для блюпринтовых функций (пути /Game/...): на стенде
+    ProblemSummaryBannerWidget_C:GetToolTipWidget и TooltipFrame_C:ConfigureTooltip_AsText
+    дали pre=1 post=0, тогда как нативная LocManager:GetActiveLanguage дала pre=1 post=1.
+    Следствие: возврат BP-функции постобработать нечем. Обходной путь — pre-хук ловит
+    вызов, а правка объекта откладывается через ExecuteWithDelay + ExecuteInGameThread.
+    Подмена возвращаемого значения через rv:set() в postFn уронила игру
+    (AV 0x70 на нативной LocManager:GetWordFromKey) — не использовать.
 
 - symbol: UnregisterHook
   category: hooks
@@ -524,10 +531,17 @@
   signature: 'text:ToString() -> string'
   summary: Локализуемый текст UI.
   status: caution
-  verified: upstream
+  verified: stand
+  example: |
+    local lib = StaticFindObject("/Script/Engine.KismetTextLibrary")
+    label:SetText(lib:Conv_StringToText("Нет Активных Исследований!"))
   pitfalls: |
-    Собрать FText из Lua-строки штатным способом нельзя; текст для UI получай
-    через ww_resolve_loc и передавай уже готовой строкой.
+    Конструктора FText в Lua нет, но её собирает движок:
+    Engine.KismetTextLibrary:Conv_StringToText(FString) -> FText. Проверено на стенде,
+    кириллица проходит без потерь. Вызывать можно на объекте класса
+    (/Script/Engine.KismetTextLibrary), CDO не нужен — так путь виден ww_validate_mod.
+    Передавать Lua-строку напрямую в параметр FText нельзя: SetToolTipText("...")
+    уронил игру (AV 0x70).
 
 - symbol: FString
   category: text
@@ -607,6 +621,57 @@
     placeBuilding, CanPlace, GetGridActorCost, constructionSiteTemplate.
     Перенос эмулируется сносом и постановкой со всеми краевыми случаями:
     возврат ресурсов, жильцы, содержимое склада, назначения рабочих, привязки труб и дорог.
+
+- symbol: ModAPI
+  category: absent-api
+  signature: 'SystemCore.ModAPI: AddNewStrings, AddDataTableRow, WriteDataTableValue, ...'
+  summary: Штатный мод-API игры со стороны UE4SS не работает — любой вызов роняет процесс.
+  status: broken
+  verified: stand
+  pitfalls: |
+    FindFirstOf("ModAPI") отдаёт живой объект, GetModAPI отрабатывает, но вызов любого
+    рабочего метода даёт AV 0x70 внутри кода игры (кадры Whiskerwood-Win64-Shipping над
+    кадрами UE4SS). Проверено и на AddNewStrings (TMap), и на паре
+    AddDataTableRow + WriteDataTableValue, где все параметры — FName/FString.
+    Значит дело не в маршалинге: похоже, ModAPI не инициализирован вне штатного
+    мод-пайплайна игры. Своих ключей локализации через него не добавить —
+    текст задавай напрямую через Conv_StringToText, см. категорию text.
+
+- symbol: LocTextBlock.SetKey
+  category: ui
+  signature: 'block:SetKey(key: FName)'
+  summary: Ставит ключ локализации и разрешает его в текст.
+  status: caution
+  verified: stand
+  pitfalls: |
+    SetKey("None") роняет игру (AV 0x70): пустой ключ упирается в отсутствующую запись.
+    Погасить ключ, чтобы блок не перечитал его заново, этим способом нельзя.
+    LocTextBlock наследует UMG.TextBlock, поэтому свой текст ставится через SetText
+    с FText из Conv_StringToText. Учти: при сборке Slate блок перечитывает Key и
+    затирает текст — ставь его повторно с задержкой, когда виджет уже собран.
+
+- symbol: BP-хуки и порядок вызова
+  category: hooks
+  signature: '—'
+  summary: У блюпринтовой функции коллбэк RegisterHook срабатывает после её вложенных вызовов.
+  status: caution
+  verified: stand
+  pitfalls: |
+    Замерено на ProblemSummaryBannerWidget_C:GetToolTipWidget: сначала в лог попадает
+    вложенный TooltipFrame_C:ConfigureTooltip_AsText, и только потом внешняя функция.
+    То есть "pre" у BP ведёт себя как выход из функции — это же объясняет, почему
+    postFn у BP не вызывается вовсе. Практический вывод: объект, который функция
+    собирает внутри, к моменту хука уже готов и его можно править.
+
+- symbol: TMap
+  category: params
+  signature: '—'
+  summary: Параметр-TMap из Lua передать нечем.
+  status: broken
+  verified: stand
+  pitfalls: |
+    Lua-таблица в параметр TMap уронила игру (AV 0x70 на ModAPI:AddNewStrings).
+    Ищи перегрузку или другую функцию, принимающую скаляры.
 
 - symbol: startResearch
   category: absent-api
