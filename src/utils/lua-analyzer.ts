@@ -35,6 +35,9 @@ const MUTATING_NAMES = new Set([
 ])
 const MUTATING_PREFIX = /^(Set|K2_Set|Add|Remove|Destroy|Spawn|Play|Stop|Apply|Enable|Disable)[A-Z_]/
 const LOAD_TIME_LOOKUP = new Set(['FindFirstOf', 'FindAllOf'])
+const DEFERRED_CALLBACK = new Set(['ExecuteWithDelay', 'ExecuteAsync', 'LoopAsync'])
+const CLASS_SOURCE = new Set(['FindFirstOf', 'FindAllOf', 'StaticFindObject', 'StaticConstructObject'])
+const SETTER = /^(?:K2_)?Set([A-Z_]\w*)$/
 
 export interface Callback {
   slot: 'pre' | 'post'
@@ -68,11 +71,23 @@ export interface CommentSpan {
   to: number
 }
 
+export interface ObjectWrite {
+  /** имя класса или путь источника объекта; null — переменную к классу привязать не удалось */
+  cls: string | null
+  property: string
+  via: 'field' | 'setter'
+  /** запись отложена через ExecuteWithDelay и подобные: порядок между модами не определён */
+  deferred: boolean
+  line: number
+  column: number
+}
+
 export interface Analysis {
   syntaxError?: { message: string; line: number; column: number }
   comments: CommentSpan[]
   refs: Reference[]
   lints: Lint[]
+  writes: ObjectWrite[]
   requires: string[]
   usesDirectRegisterHook: boolean
   usesWWRegisterHook: boolean
@@ -82,6 +97,7 @@ interface Ctx {
   topLevel: boolean
   asyncOrigin: string | null
   inGameThread: boolean
+  deferred: boolean
 }
 
 const ESCAPES: Record<string, string> = {
@@ -185,6 +201,9 @@ export const WW_OBJ_WRAPPERS: Record<string, string> = {
   first_of: 'FindFirstOf',
   all_of: 'FindAllOf',
   find: 'StaticFindObject',
+  first_of_cached: 'FindFirstOf',
+  all_of_cached: 'FindAllOf',
+  find_cached: 'StaticFindObject',
 }
 
 function requiredModule(node: any): string | null {
@@ -238,6 +257,7 @@ export function analyzeLua(source: string): Analysis {
       comments: [],
       refs: [],
       lints: [],
+      writes: [],
       requires: [],
       usesDirectRegisterHook: false,
       usesWWRegisterHook: false,
@@ -247,6 +267,8 @@ export function analyzeLua(source: string): Analysis {
   const { aliases, modules } = collectAliases(ast)
   const refs: Reference[] = []
   const lints: Lint[] = []
+  const writes: ObjectWrite[] = []
+  const classOfVar = new Map<string, { root: string; path: string[] }>()
   const requires: string[] = []
   let usesDirectRegisterHook = false
   let usesWWRegisterHook = false
@@ -277,6 +299,65 @@ export function analyzeLua(source: string): Analysis {
     return out
   }
 
+  const resolvedName = (node: any): { name: string; method: boolean } | null => {
+    const called = callName(node)
+    if (!called) return null
+    const wrapped = called.owner && modules.get(called.owner) === 'ww.obj' ? WW_OBJ_WRAPPERS[called.name] : undefined
+    if (wrapped) return { name: wrapped, method: false }
+    return { name: called.method ? called.name : (aliases.get(called.name) ?? called.name), method: called.method }
+  }
+
+  /**
+   * Цепочка доступа от опознаваемого корня: value.Icon.Brush -> { root: класс value, path: [Icon, Brush] }.
+   * Через вызовы методов не идём (кроме :get() у RemoteUnrealParam) — иначе ключ перестаёт быть точным.
+   */
+  const accessPath = (node: any): { root: string; path: string[] } | null => {
+    if (!node || typeof node !== 'object') return null
+    if (node.type === 'Identifier') {
+      const bound = classOfVar.get(node.name)
+      return bound ? { root: bound.root, path: [...bound.path] } : null
+    }
+    if (node.type === 'MemberExpression' && node.indexer === '.' && node.identifier?.type === 'Identifier') {
+      const base = accessPath(node.base)
+      return base ? { root: base.root, path: [...base.path, node.identifier.name] } : null
+    }
+    if (node.type === 'IndexExpression') {
+      const base = accessPath(node.base)
+      if (!base) return null
+      if (node.index?.type !== 'StringLiteral') return base
+      return { root: base.root, path: [...base.path, luaStringValue(node.index.raw)] }
+    }
+    if (!isCall(node)) return null
+    const called = resolvedName(node)
+    if (!called) return null
+    if (called.method) return called.name === 'get' ? accessPath(node.base?.base) : null
+    if (CLASS_SOURCE.has(called.name)) {
+      const first = callArguments(node)[0]
+      return first?.type === 'StringLiteral' ? { root: luaStringValue(first.raw), path: [] } : null
+    }
+    return null
+  }
+
+  const bindCallbackParam = (fn: any, root: string): void => {
+    const first = fn?.type === 'FunctionDeclaration' ? fn.parameters?.[0] : null
+    if (first?.type === 'Identifier') classOfVar.set(first.name, { root, path: [] })
+  }
+
+  const recordFieldWrites = (targets: any[], ctx: Ctx): void => {
+    for (const t of targets) {
+      if (t?.type !== 'MemberExpression' && t?.type !== 'IndexExpression') continue
+      const ap = accessPath(t)
+      if (!ap || ap.path.length === 0) continue
+      writes.push({
+        cls: ap.root,
+        property: ap.path.join('.'),
+        via: 'field',
+        deferred: ctx.deferred,
+        ...loc(t),
+      })
+    }
+  }
+
   const walk = (node: any, ctx: Ctx): void => {
     if (!node || typeof node !== 'object') return
 
@@ -304,6 +385,30 @@ export function analyzeLua(source: string): Analysis {
             ...loc(node),
             callbacks: HOOK_REGISTER.has(name) ? collectCallbacks(args) : [],
           })
+        }
+
+        if (!method && args[0]?.type === 'StringLiteral') {
+          if (HOOK_REGISTER.has(name)) {
+            const owning = luaStringValue(args[0].raw).split(':')[0]
+            bindCallbackParam(args[1], owning)
+            bindCallbackParam(args[2], owning)
+          } else if (name === 'NotifyOnNewObject') {
+            bindCallbackParam(args[1], luaStringValue(args[0].raw))
+          }
+        }
+
+        if (method) {
+          const setter = SETTER.exec(called.name)
+          const ap = setter ? accessPath(node.base?.base) : null
+          if (setter && ap) {
+            writes.push({
+              cls: ap.root,
+              property: [...ap.path, setter[1]].join('.'),
+              via: 'setter',
+              deferred: ctx.deferred,
+              ...loc(node),
+            })
+          }
         }
 
         if (!method && name === 'require') {
@@ -345,7 +450,12 @@ export function analyzeLua(source: string): Analysis {
           )
         }
 
-        const childCtx: Ctx = { topLevel: ctx.topLevel, asyncOrigin: ctx.asyncOrigin, inGameThread: ctx.inGameThread }
+        const childCtx: Ctx = {
+          topLevel: ctx.topLevel,
+          asyncOrigin: ctx.asyncOrigin,
+          inGameThread: ctx.inGameThread,
+          deferred: ctx.deferred || (!method && DEFERRED_CALLBACK.has(name)),
+        }
         if (!method && name === 'ExecuteInGameThread') childCtx.inGameThread = true
         else if (!method && GAME_THREAD_CALLBACK.has(name)) {
           childCtx.inGameThread = true
@@ -361,8 +471,35 @@ export function analyzeLua(source: string): Analysis {
       }
     }
 
+    if (node.type === 'LocalStatement' || node.type === 'AssignmentStatement') {
+      const vars: any[] = node.variables ?? []
+      const inits: any[] = node.init ?? []
+      for (let i = 0; i < vars.length; i++) {
+        if (vars[i]?.type !== 'Identifier') continue
+        const ap = accessPath(inits[i])
+        if (ap) classOfVar.set(vars[i].name, ap)
+      }
+      if (node.type === 'AssignmentStatement') recordFieldWrites(vars, ctx)
+    }
+
+    if (node.type === 'ForGenericStatement') {
+      const iter = node.iterators?.[0]
+      const inner =
+        iter && isCall(iter) && ['ipairs', 'pairs'].includes(resolvedName(iter)?.name ?? '')
+          ? callArguments(iter)[0]
+          : iter
+      const ap = accessPath(inner)
+      const last = (node.variables ?? []).at(-1)
+      if (ap && last?.type === 'Identifier') classOfVar.set(last.name, ap)
+    }
+
     if (node.type === 'FunctionDeclaration') {
-      const inner: Ctx = { topLevel: false, asyncOrigin: ctx.asyncOrigin, inGameThread: ctx.inGameThread }
+      const inner: Ctx = {
+        topLevel: false,
+        asyncOrigin: ctx.asyncOrigin,
+        inGameThread: ctx.inGameThread,
+        deferred: ctx.deferred,
+      }
       for (const key of Object.keys(node)) {
         if (key === 'loc' || key === 'range') continue
         const v = node[key]
@@ -380,7 +517,7 @@ export function analyzeLua(source: string): Analysis {
     }
   }
 
-  const rootCtx: Ctx = { topLevel: true, asyncOrigin: null, inGameThread: false }
+  const rootCtx: Ctx = { topLevel: true, asyncOrigin: null, inGameThread: false, deferred: false }
   for (const stmt of ast.body ?? []) walk(stmt, rootCtx)
 
   const comments: CommentSpan[] = []
@@ -397,7 +534,7 @@ export function analyzeLua(source: string): Analysis {
     }
   }
 
-  return { comments, refs, lints, requires, usesDirectRegisterHook, usesWWRegisterHook }
+  return { comments, refs, lints, writes, requires, usesDirectRegisterHook, usesWWRegisterHook }
 }
 
 export function isClassNameArgument(fn: string): boolean {

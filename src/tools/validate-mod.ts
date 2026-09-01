@@ -3,8 +3,9 @@ import { ServerConfig } from '../config'
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { AiTextResult, renderAiText, Scalar } from '../utils/ai-text'
 import { PathSandboxError } from '../utils/path-sandbox'
-import { analyzeLua, CommentSpan, Reference } from '../utils/lua-analyzer'
+import { analyzeLua, Analysis, CommentSpan, Reference } from '../utils/lua-analyzer'
 import { listSiblingMods, loadModProject, ModProject, relativeTo } from '../utils/mod-project'
+import { listInstalledMods, LoadSlot, loadSlot, readLoadOrder } from '../utils/ue4ss-mods'
 import { getBridge } from '../utils/bridge-client'
 import { findObject, isHookable, ObjectHit, suggestSimilar } from './common'
 import { activePitfalls, PitfallHint } from './memory-common'
@@ -31,11 +32,36 @@ const SEVERITY_ORDER: Record<Severity, number> = { error: 0, warn: 1, info: 2 }
 const CLASS_KINDS = new Set(['Class', 'BlueprintGeneratedClass', 'WidgetBlueprintGeneratedClass'])
 const HOOK_FNS = new Set(['RegisterHook', 'WWRegisterHook'])
 
+const MAX_FOREIGN_SOURCE = 512 * 1024
+
 interface HookUse {
   path: string
   file: string
   line: number
 }
+
+interface WriteUse {
+  key: string
+  label: string
+  file: string
+  line: number
+  column: number
+  deferred: boolean
+}
+
+interface ModSurface {
+  hooks: HookUse[]
+  writes: WriteUse[]
+}
+
+interface ForeignMod {
+  name: string
+  origin: string
+  slot: LoadSlot | null
+  surface: ModSurface
+}
+
+type ClassResolver = (cls: string) => { key: string; label: string } | null
 
 function classesByName(ctx: GameContext, name: string): Array<{ path: string; kind: string }> {
   return ctx.db
@@ -259,8 +285,51 @@ function checkPitfalls(
   return hits
 }
 
-function collectHookUses(ctx: GameContext, mod: ModProject): HookUse[] {
-  const uses: HookUse[] = []
+/** Один и тот же класс приходит из модов то коротким именем, то путём — сводим к ключу индекса. */
+function classResolver(ctx: GameContext): ClassResolver {
+  const memo = new Map<string, { key: string; label: string } | null>()
+  return (cls) => {
+    const cached = memo.get(cls)
+    if (cached !== undefined) return cached
+    let res: { key: string; label: string } | null = null
+    if (cls.startsWith('/')) {
+      const obj = findObject(ctx, cls)
+      if (obj) res = { key: obj.path, label: obj.name }
+    } else {
+      const hits = classesByName(ctx, cls)
+      if (hits.length === 1) res = { key: hits[0].path, label: cls }
+      else if (hits.length > 1) res = { key: `name:${cls.toLowerCase()}`, label: cls }
+    }
+    memo.set(cls, res)
+    return res
+  }
+}
+
+function collectWrites(resolve: ClassResolver, analysis: Analysis, file: string): WriteUse[] {
+  const out: WriteUse[] = []
+  const seen = new Set<string>()
+  for (const w of analysis.writes) {
+    if (!w.cls) continue
+    const cls = resolve(w.cls)
+    if (!cls) continue
+    const key = `${cls.key}#${w.property.toLowerCase()}`
+    if (seen.has(`${key}@${w.line}`)) continue
+    seen.add(`${key}@${w.line}`)
+    out.push({
+      key,
+      label: `${cls.label}.${w.property}`,
+      file,
+      line: w.line,
+      column: w.column,
+      deferred: w.deferred,
+    })
+  }
+  return out
+}
+
+function collectSurface(ctx: GameContext, resolve: ClassResolver, mod: ModProject): ModSurface {
+  const hooks: HookUse[] = []
+  const writes: WriteUse[] = []
   for (const file of mod.luaFiles) {
     let source: string
     try {
@@ -268,16 +337,55 @@ function collectHookUses(ctx: GameContext, mod: ModProject): HookUse[] {
     } catch {
       continue
     }
+    if (source.length > MAX_FOREIGN_SOURCE) continue
     const analysis = analyzeLua(source)
     if (analysis.syntaxError) continue
+    const rel = relativeTo(mod.root, file)
     for (const ref of analysis.refs) {
       if (!HOOK_FNS.has(ref.fn) || ref.arg === null) continue
       const obj = findObject(ctx, ref.arg)
-      const path = obj?.hook_path ?? ref.arg
-      uses.push({ path, file: relativeTo(mod.root, file), line: ref.line })
+      hooks.push({ path: obj?.hook_path ?? ref.arg, file: rel, line: ref.line })
     }
+    writes.push(...collectWrites(resolve, analysis, rel))
   }
-  return uses
+  return { hooks, writes }
+}
+
+function collectForeign(ctx: GameContext, config: ServerConfig, resolve: ClassResolver, mod: ModProject): ForeignMod[] {
+  const order = readLoadOrder(config)
+  const out: ForeignMod[] = []
+  const siblings = listSiblingMods(config, mod.root)
+  for (const other of siblings) {
+    out.push({
+      name: other.name,
+      origin: 'репозиторий',
+      slot: loadSlot(order, other.name),
+      surface: collectSurface(ctx, resolve, other),
+    })
+  }
+  for (const other of listInstalledMods(config, [mod.root, ...siblings.map((s) => s.root)])) {
+    out.push({
+      name: other.dirName,
+      origin: 'установлен',
+      slot: loadSlot(order, other.dirName),
+      surface: collectSurface(ctx, resolve, other),
+    })
+  }
+  return out
+}
+
+function orderNote(mine: LoadSlot | null, other: ForeignMod): string {
+  if (!other.slot) return `${other.name} не значится в mods.txt — UE4SS его сейчас не грузит`
+  if (!other.slot.enabled) return `${other.name} выключен в mods.txt`
+  if (!mine) return 'твоего мода в mods.txt ещё нет: порядок определится после ww_deploy_mod mode=release'
+  if (!mine.enabled) return 'твой мод выключен в mods.txt'
+  return mine.index < other.slot.index
+    ? `ты грузишься раньше (mods.txt: ты #${mine.index}, ${other.name} #${other.slot.index})`
+    : `ты грузишься позже (mods.txt: ${other.name} #${other.slot.index}, ты #${mine.index})`
+}
+
+function collisionSeverity(other: ForeignMod): Severity {
+  return other.slot?.enabled ? 'warn' : 'info'
 }
 
 export async function handleValidateMod(ctx: GameContext, config: ServerConfig, args: ValidateModArgs): Promise<string> {
@@ -319,6 +427,8 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
   const findings: Finding[] = []
   const probeTargets = new Set<string>()
   const uses: HookUse[] = []
+  const myWrites: WriteUse[] = []
+  const resolve = classResolver(ctx)
   let dynamicPaths = 0
 
   if (!existsSync(mod.entry)) {
@@ -356,6 +466,7 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
     }
 
     pitfallHits += checkPitfalls(pitfalls, source, analysis.comments, rel, findings)
+    myWrites.push(...collectWrites(resolve, analysis, rel))
 
     for (const lint of analysis.lints) {
       findings.push({ severity: lint.severity, code: lint.code, file: rel, line: lint.line, column: lint.column, message: lint.message })
@@ -397,21 +508,51 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
     }
   }
 
-  const siblings = listSiblingMods(config, mod.root)
-  const mine = new Map(uses.map((u) => [u.path, u]))
+  const foreign = collectForeign(ctx, config, resolve, mod)
+  const mySlot = loadSlot(readLoadOrder(config), mod.name)
+  const myHooks = new Map(uses.map((u) => [u.path, u]))
+  const myWriteIndex = new Map<string, WriteUse>()
+  for (const w of myWrites) if (!myWriteIndex.has(w.key)) myWriteIndex.set(w.key, w)
+
   let collisions = 0
-  for (const other of siblings) {
-    for (const use of collectHookUses(ctx, other)) {
-      const hit = mine.get(use.path)
+  let writeCollisions = 0
+  for (const other of foreign) {
+    const note = orderNote(mySlot, other)
+    const severity = collisionSeverity(other)
+
+    for (const use of other.surface.hooks) {
+      const hit = myHooks.get(use.path)
       if (!hit) continue
       collisions++
       findings.push({
-        severity: 'warn',
+        severity,
         code: 'hook_collision',
         file: hit.file,
         line: hit.line,
         column: 1,
-        message: `на ${use.path} уже вешается мод ${other.name} (${use.file}:${use.line}); UE4SS сцепит хуки молча, порядок не гарантирован`,
+        message: `на ${use.path} уже вешается мод ${other.name} (${other.origin}, ${use.file}:${use.line}); UE4SS сцепит коллбэки без приоритетов — ${note}`,
+      })
+    }
+
+    const seenKeys = new Set<string>()
+    for (const use of other.surface.writes) {
+      const hit = myWriteIndex.get(use.key)
+      if (!hit || seenKeys.has(use.key)) continue
+      seenKeys.add(use.key)
+      writeCollisions++
+      findings.push({
+        severity,
+        code: 'object_write_collision',
+        file: hit.file,
+        line: hit.line,
+        column: hit.column,
+        message: `${hit.label} пишет и мод ${other.name} (${other.origin}, ${use.file}:${use.line}); значение останется от того, кто отработает последним`,
+        extra:
+          hit.deferred || use.deferred
+            ? {
+                race: 'запись отложена через ExecuteWithDelay: исход определяют тайминги, а не порядок в mods.txt — от запуска к запуску может отличаться',
+              }
+            : { order: note },
       })
     }
   }
@@ -479,7 +620,11 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
       files: mod.luaFiles.length,
       hook_paths_checked: uses.length,
       dynamic_paths: dynamicPaths,
+      object_writes: myWriteIndex.size,
+      mods_compared: foreign.length,
+      load_order: mySlot ? `#${mySlot.index}${mySlot.enabled ? '' : ', выключен'}` : 'нет в mods.txt',
       collisions,
+      write_collisions: writeCollisions,
       memory_pitfalls: pitfallHits,
       errors,
       warnings,
