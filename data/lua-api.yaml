@@ -23,7 +23,15 @@
   pitfalls: |
     Путь берётся из hook_path в ответе ww_get_function / ww_verify_hook и не собирается вручную.
     Перед именем функции двоеточие, а не точка: /Script/Pkg.Class:Func.
-    Хук на несуществующую функцию не бросает ошибку — мод молча ничего не делает.
+    Если UFunction не найдена, RegisterHook БРОСАЕТ ошибку ("no UFunction with the specified
+    name was found"), а не возвращает nil: незакрытый вызов в теле скрипта обрывает весь
+    main.lua и мод не работает вообще. Молча ничего не делает только хук на существующую
+    функцию, которую игра не зовёт через ProcessEvent.
+    Отсюда главная разница между dev и релизом: при загрузке из mods.txt блюпринтовые
+    классы (/Game/...) ещё не загружены и хук на них падает, а через мост в живую игру
+    тот же путь встаёт. Проверено на research-notifier 1.0.0: TooltipFrame_C:
+    ConfigureTooltip_AsText уронил main.lua на старте игры. Ставь хуки через
+    require("ww.hook").for_mod(MOD, log) — она дорегистрирует путь после загрузки карты.
     Все аргументы приходят обёртками RemoteUnrealParam: обязателен :get().
     Ловятся вызовы, идущие через ProcessEvent; чисто нативные C++ -> C++ вызовы
     (Actor:K2_SetActorLocation, UserWidget:Tick) на стенде не сработали за 12 с игры.
@@ -57,12 +65,31 @@
   status: ok
   verified: stand
   example: |
-    local register = WWRegisterHook or RegisterHook
-    register("/Script/SystemCore.UnlockResearchComponent:SetResearchTopic", onTopic)
+    local hook = require("ww.hook").for_mod(MOD, log)
+    hook.on("/Script/SystemCore.UnlockResearchComponent:SetResearchTopic", onTopic)
   pitfalls: |
-    Существует только внутри вызова load_mod моста. В релизной загрузке через mods.txt
-    глобали нет — пиши "local register = WWRegisterHook or RegisterHook".
-    Без неё три правки подряд в dev-цикле дают три срабатывания на одно событие.
+    Существует только внутри вызова load_mod моста и обнуляется сразу после dofile:
+    отложенная регистрация обязана держать саму функцию в переменной, а не читать глобаль.
+    В релизной загрузке через mods.txt глобали нет вообще.
+    Напрямую её не зовут — этим занимается ww.hook, иначе три правки подряд в dev-цикле
+    дают три срабатывания на одно событие.
+
+- symbol: ww.hook
+  category: mod
+  signature: "require('ww.hook').for_mod(MOD, log) -> { on(path, pre, post), pending() }"
+  summary: Регистрация хуков, работающая и в dev-цикле, и на холодном старте игры.
+  status: ok
+  verified: stand
+  example: |
+    local hook = require("ww.hook").for_mod(MOD, log)
+    hook.on("/Game/UI/BP_PlayHud.BP_PlayHud_C:UpdateProblemSummaries", onRebuild)
+  pitfalls: |
+    Решает ровно две задачи: захватывает WWRegisterHook на время dofile (снятие хуков
+    при dev-перезагрузке) и переживает холодный старт, когда /Game/-класса ещё нет.
+    Путь, не вставший сразу, повторяется сериями после каждого RegisterLoadMapPostHook:
+    10 попыток по 500 мс, затем 30 по 2 с; серия обрывается, как только всё встало,
+    так что в установившемся кадре стоимости нет. Не вставшее за серию уходит в WARN.
+    Путь передаётся строкой прямо в hook.on — иначе ww_validate_mod его не сверит.
 
 - symbol: NotifyOnNewObject
   category: hooks

@@ -363,7 +363,11 @@ function collectForeign(ctx: GameContext, config: ServerConfig, resolve: ClassRe
       surface: collectSurface(ctx, resolve, other),
     })
   }
+  // копия репозиторного мода в ue4ss/Mods — это он сам, а не сосед: без этого мод
+  // конфликтует со своей же установленной сборкой на каждом хуке
+  const known = new Set([mod.name, ...siblings.map((s) => s.name)].map((n) => n.toLowerCase()))
   for (const other of listInstalledMods(config, [mod.root, ...siblings.map((s) => s.root)])) {
+    if (known.has(other.dirName.toLowerCase()) || known.has(other.name.toLowerCase())) continue
     out.push({
       name: other.dirName,
       origin: 'установлен',
@@ -481,7 +485,7 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
         line: first?.line ?? 0,
         column: first?.column ?? 0,
         message:
-          'прямой RegisterHook: в dev-цикле (ww_deploy_mod mode=dev) хуки накопятся при каждой перезагрузке. Пиши local register = WWRegisterHook or RegisterHook',
+          'прямой RegisterHook: в dev-цикле (ww_deploy_mod mode=dev) хуки накопятся при каждой перезагрузке, а на холодном старте упадут на незагруженном классе. Ставь через require("ww.hook").for_mod(MOD, log)',
       })
     }
 

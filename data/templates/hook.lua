@@ -5,31 +5,15 @@
 local MOD = "{{NAME}}"
 local log = require("ww.log").for_mod(MOD)
 
--- В dev-цикле (ww_deploy_mod mode=dev) мост подменяет WWRegisterHook и снимает
--- хуки прошлой загрузки; в релизной загрузке глобали нет.
-local register = WWRegisterHook or RegisterHook
+-- ww.hook закрывает оба режима загрузки: в dev-цикле (ww_deploy_mod mode=dev) снимает
+-- хуки прошлой перезагрузки через мост, а на холодном старте из mods.txt дорегистрирует
+-- блюпринтовые пути после загрузки карты — голый RegisterHook там бросает ошибку
+-- на ещё не загруженном /Game/-классе и обрывает весь main.lua.
+local hook = require("ww.hook").for_mod(MOD, log)
 
--- Каждая запись: { path = "<hook_path из ww_verify_hook>", pre = fn, post = fn }
-local HOOKS = {
-  -- {
-  --   path = "/Script/Pkg.Class:Func",
-  --   post = function(Context, arg1)
-  --     log.info("arg1 = " .. tostring(arg1:get()))
-  --   end,
-  -- },
-}
+-- Путь строкой прямо в вызове: только так ww_validate_mod сверит его с индексом.
+-- hook.on("/Script/Pkg.Class:Func", function(Context, arg1)
+--   log.info("arg1 = " .. tostring(arg1:get()))
+-- end)
 
-local function install()
-  local noop = function() end
-  for _, h in ipairs(HOOKS) do
-    local ok, err = pcall(register, h.path, h.pre or noop, h.post)
-    if ok then
-      log.info("hook: " .. h.path)
-    else
-      log.error("hook failed: " .. h.path .. " — " .. tostring(err))
-    end
-  end
-end
-
-install()
-log.info("loaded, hooks=" .. #HOOKS)
+log.info("loaded")

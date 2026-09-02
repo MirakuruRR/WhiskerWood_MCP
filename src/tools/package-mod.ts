@@ -173,6 +173,7 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
 
   const files = collectFiles(mod.root)
   const luaSources: string[] = []
+  let bridgeOnlyHooks = false
   for (const rel of files) {
     if (!rel.endsWith('.lua')) continue
     const text = readFileSync(`${mod.root}/${rel}`, 'utf8')
@@ -186,6 +187,17 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
         hint: 'прогони ww_validate_mod и почини синтаксис до сборки релиза',
       })
     }
+    const coldStart = a.lints.find((l) => l.code === 'bp_hook_at_load_time')
+    if (coldStart) {
+      return report({
+        status: 'hook_at_load_time',
+        file: rel,
+        line: coldStart.line,
+        error: coldStart.message,
+        hint: 'у игрока мод грузится из mods.txt до загрузки карты и умрёт на первом же хуке; прогони ww_validate_mod',
+      })
+    }
+    if (a.usesWWRegisterHook && !a.usesDirectRegisterHook) bridgeOnlyHooks = true
     luaSources.push(text)
   }
 
@@ -236,8 +248,6 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     manifestState = `version=${version} записан в ${MOD_MANIFEST}`
   }
 
-  const bridgeOnlyHooks = luaSources.some((s) => /WWRegisterHook/.test(s) && !/(?<!WW)RegisterHook/.test(s))
-
   return report({
     status: 'ok',
     mod: mod.name,
@@ -258,7 +268,7 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     ...(bridgeOnlyHooks
       ? {
           warning:
-            'хуки ставятся только через WWRegisterHook: у игрока WWBridge нет, хуки не встанут. Нужен local register = WWRegisterHook or RegisterHook',
+            'хуки ставятся только через WWRegisterHook: у игрока WWBridge нет, глобали не существует и хуки не встанут. Ставь их через require("ww.hook")',
         }
       : {}),
     next: 'распакуй архив и проверь установку по УСТАНОВКА.txt',

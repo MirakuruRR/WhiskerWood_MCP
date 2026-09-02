@@ -116,9 +116,9 @@ export function handleGenerateHook(ctx: GameContext, args: GenerateHookArgs): st
 
   const lines: string[] = []
   lines.push(`local log = require("ww.log").for_mod(MOD)`)
-  lines.push('local register = WWRegisterHook or RegisterHook')
+  lines.push('local hook = require("ww.hook").for_mod(MOD, log)')
   lines.push('')
-  lines.push(`register("${obj.hook_path}",`)
+  lines.push(`hook.on("${obj.hook_path}",`)
   const pre = kind === 'pre' || kind === 'both' ? callbackBody(inputs, `pre ${obj.name}`) : ['  function() end']
   const post = kind === 'post' || kind === 'both' ? callbackBody(inputs, `post ${obj.name}`) : null
   if (post) pre[pre.length - 1] += ','

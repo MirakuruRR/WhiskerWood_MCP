@@ -206,6 +206,14 @@ export const WW_OBJ_WRAPPERS: Record<string, string> = {
   find_cached: 'StaticFindObject',
 }
 
+/** lib/ww/hook.lua: отложенная регистрация, путь тот же аргумент, что у RegisterHook. */
+export const WW_HOOK_WRAPPERS: Record<string, string> = { on: 'RegisterHook' }
+
+const MODULE_WRAPPERS: Record<string, Record<string, string>> = {
+  'ww.obj': WW_OBJ_WRAPPERS,
+  'ww.hook': WW_HOOK_WRAPPERS,
+}
+
 function requiredModule(node: any): string | null {
   if (
     node?.type === 'CallExpression' &&
@@ -218,8 +226,19 @@ function requiredModule(node: any): string | null {
   return null
 }
 
-/** `local register = WWRegisterHook or RegisterHook` — идиома из шаблонов; без этого
- *  прохода все хуки мода уходят из-под проверки путей. */
+/** require("ww.hook").for_mod(MOD, log) — модуль опознаётся и через фабрику. */
+function moduleOf(node: any, known: Map<string, string>): string | null {
+  const direct = requiredModule(node)
+  if (direct) return direct
+  if (node?.type === 'Identifier') return known.get(node.name) ?? null
+  if (node?.type === 'CallExpression' && node.base?.type === 'MemberExpression') {
+    return moduleOf(node.base.base, known)
+  }
+  return null
+}
+
+/** Псевдонимы (`local register = WWRegisterHook or RegisterHook`) и модули lib/ww:
+ *  без этого прохода все хуки мода уходят из-под проверки путей. */
 function collectAliases(ast: any): { aliases: Map<string, string>; modules: Map<string, string> } {
   const aliases = new Map<string, string>()
   const modules = new Map<string, string>()
@@ -232,7 +251,7 @@ function collectAliases(ast: any): { aliases: Map<string, string>; modules: Map<
         if (vars[i]?.type !== 'Identifier') continue
         const target = resolveAlias(inits[i])
         if (target) aliases.set(vars[i].name, target)
-        const module = requiredModule(inits[i])
+        const module = moduleOf(inits[i], modules)
         if (module) modules.set(vars[i].name, module)
       }
     }
@@ -302,7 +321,8 @@ export function analyzeLua(source: string): Analysis {
   const resolvedName = (node: any): { name: string; method: boolean } | null => {
     const called = callName(node)
     if (!called) return null
-    const wrapped = called.owner && modules.get(called.owner) === 'ww.obj' ? WW_OBJ_WRAPPERS[called.name] : undefined
+    const ns = called.owner ? modules.get(called.owner) : undefined
+    const wrapped = ns ? MODULE_WRAPPERS[ns]?.[called.name] : undefined
     if (wrapped) return { name: wrapped, method: false }
     return { name: called.method ? called.name : (aliases.get(called.name) ?? called.name), method: called.method }
   }
@@ -372,8 +392,8 @@ export function analyzeLua(source: string): Analysis {
       const args = callArguments(node)
       if (called) {
         const { method, owner } = called
-        const wrapped =
-          owner && modules.get(owner) === 'ww.obj' ? WW_OBJ_WRAPPERS[called.name] : undefined
+        const ns = owner ? modules.get(owner) : undefined
+        const wrapped = ns ? MODULE_WRAPPERS[ns]?.[called.name] : undefined
         const name = wrapped ?? (method ? called.name : (aliases.get(called.name) ?? called.name))
         const viaWrapper = wrapped !== undefined
 
@@ -416,8 +436,8 @@ export function analyzeLua(source: string): Analysis {
           if (first?.type === 'StringLiteral') requires.push(luaStringValue(first.raw))
         }
 
-        if (!method && name === 'RegisterHook') usesDirectRegisterHook = true
-        if (!method && name === 'WWRegisterHook') usesWWRegisterHook = true
+        if (!method && !viaWrapper && name === 'RegisterHook') usesDirectRegisterHook = true
+        if (!method && !viaWrapper && name === 'WWRegisterHook') usesWWRegisterHook = true
 
         if (!method && name === 'print') {
           const first = args[0]
@@ -429,6 +449,18 @@ export function analyzeLua(source: string): Analysis {
                 : null
           if (literal !== null && !literal.endsWith('\n')) {
             lint('print_without_newline', 'warn', node, 'print в UE4SS не добавляет перевод строки: без "\\n" записи лога склеиваются')
+          }
+        }
+
+        if (!method && !viaWrapper && ctx.topLevel && HOOK_REGISTER.has(name) && args[0]?.type === 'StringLiteral') {
+          const path = luaStringValue(args[0].raw)
+          if (path.startsWith('/Game/')) {
+            lint(
+              'bp_hook_at_load_time',
+              'error',
+              node,
+              `${name} по блюпринтовому пути в теле скрипта: на холодном старте из mods.txt класс ещё не загружен, вызов бросает ошибку и обрывает весь main.lua — мод не работает вообще. Ставь хук через require("ww.hook").for_mod(MOD, log) и hook.on(path, fn)`,
+            )
           }
         }
 
