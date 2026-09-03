@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, realpathSync, readFileSync, statSync } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, resolve } from 'node:path'
 
 export interface ServerConfig {
   gameDir: string
@@ -12,6 +12,8 @@ export interface ServerConfig {
   modsRepo: string
   sandboxRoots: string[]
   extractRoot: string
+  saveDir: string
+  steamAppId: string
   defaultLangs: string[]
   bridgePollMs: number
   bridgeTimeoutMs: number
@@ -29,6 +31,8 @@ const TEMPLATE = `{
   "modsRepo":  "D:/Whiskerwood_IO/WhiskerWood_Mods",
   "sandboxRoots": ["{modsRepo}", "{stateDir}", "{distDir}"],
   "extractRoot":  "{stateDir}/extracted",
+  "saveDir":      "%LOCALAPPDATA%/Whiskerwood/Saved/saves_player",
+  "steamAppId":   "",
   "defaultLangs": ["En", "Ru"],
   "bridgePollMs": 120,
   "bridgeTimeoutMs": 5000
@@ -77,6 +81,7 @@ export function loadConfig(): ServerConfig {
       .replaceAll('{modsRepo}', modsRepoRaw)
       .replaceAll('{stateDir}', stateDirRaw)
       .replaceAll('{distDir}', distDirRaw)
+      .replaceAll('%LOCALAPPDATA%', norm(process.env.LOCALAPPDATA ?? ''))
     out = norm(isAbsolute(out) ? out : resolve(configDir, out))
     return out
   }
@@ -92,6 +97,13 @@ export function loadConfig(): ServerConfig {
   const ue4ssDir = expand(str('ue4ssDir'))
   const dumpsDir = fixRel(str('dumpsDir'))
   const extractRoot = expand(str('extractRoot'))
+
+  const saveDirRaw = raw.saveDir
+  const saveDir =
+    typeof saveDirRaw === 'string' && saveDirRaw.length > 0
+      ? expand(saveDirRaw)
+      : norm(`${process.env.LOCALAPPDATA ?? ''}/${basename(gameDir)}/Saved/saves_player`)
+  const steamAppId = typeof raw.steamAppId === 'string' ? raw.steamAppId.trim() : ''
 
   const rootsRaw = raw.sandboxRoots
   const sandboxRoots = (Array.isArray(rootsRaw) && rootsRaw.length > 0 ? (rootsRaw as string[]) : []).map((r) =>
@@ -113,6 +125,8 @@ export function loadConfig(): ServerConfig {
     distDir: distDirRaw,
     dumpsDir,
     modsRepo: modsRepoRaw,
+    saveDir,
+    steamAppId,
     sandboxRoots,
     extractRoot,
     defaultLangs,

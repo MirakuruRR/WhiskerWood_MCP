@@ -10,6 +10,7 @@ import { handleGetFunction } from './tools/get-function'
 import { handleVerifyHook } from './tools/verify-hook'
 import { handleIndexStatus } from './tools/index-status'
 import { handleGameStatus } from './tools/game-status'
+import { handleGameProcess } from './tools/game-process'
 import { handleGameEval } from './tools/game-eval'
 import { handleUiTree } from './tools/ui-tree'
 import { handleTraceCalls } from './tools/trace-calls'
@@ -282,6 +283,34 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: LIVE_READ,
     },
     wrapBridge((ctx) => handleGameStatus(ctx, config)),
+  )
+
+  server.registerTool(
+    'ww_game_process',
+    {
+      title: 'Процесс игры',
+      description:
+        'Управление самим процессом игры: запуск через Steam, force kill, перезапуск и автономная загрузка сохранения. action=start запускает копию из Steam (AppID берётся из appmanifest) и ЖДЁТ готовности: wait_for=process|bridge|menu|world, по умолчанию bridge. Перед стартом UE4SS.log уезжает в архив state/logs, поэтому ww_game_log потом читает только текущую сессию. action=start вместе с save запускает игру и, дождавшись главного меню, грузит сохранение через мост (ArcoGameInstance:EnterPlay) — это единственный автономный путь к загруженному миру; status=save_loaded означает, что карта поднялась, тяжёлый сейв может ещё дозагружать состояние. action=stop — taskkill /F без спроса, несохранённый прогресс теряется. action=restart нужен release-модам: они подхватываются только при старте игры. action=list_saves — имена сохранений с датами. Если игра исчезла не по нашей команде, status помечает exit_kind=unexpected и отдаёт крашдамп и последнюю ошибку лога. Состояние моста без трогания процесса смотри через ww_game_status.',
+      inputSchema: {
+        action: z
+          .enum(['status', 'start', 'stop', 'restart', 'load_save', 'list_saves'])
+          .optional()
+          .describe('По умолчанию status'),
+        save: z
+          .string()
+          .optional()
+          .describe('Имя сохранения без расширения, как в list_saves. Со start/restart — загрузить сразу после выхода в меню'),
+        args: z.array(z.string()).optional().describe('Аргументы запуска, например -windowed -ResX=1280 -ResY=720'),
+        wait_for: z
+          .enum(['none', 'process', 'bridge', 'menu', 'world'])
+          .optional()
+          .describe('Чего ждать: появления процесса, живого моста, главного меню, загруженного уровня'),
+        timeout_ms: z.number().int().positive().max(600000).optional().describe('Бюджет ожидания, по умолчанию 180000'),
+        version: versionParam,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    },
+    wrapBridge((ctx, args) => handleGameProcess(ctx, config, args)),
   )
 
   server.registerTool(
