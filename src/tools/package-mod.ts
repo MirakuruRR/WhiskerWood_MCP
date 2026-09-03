@@ -13,7 +13,19 @@ export interface PackageModArgs {
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', '.vscode', '.idea'])
 const SKIP_FILE = /(\.(log|bak|orig|tmp|zip|7z|rar)$|^\.|~$|^Thumbs\.db$)/i
-const README_NAMES = ['УСТАНОВКА.txt', 'README.txt', 'readme.txt']
+const README_RU = ['УСТАНОВКА.txt']
+const README_EN = ['INSTALL.txt', 'README.txt', 'readme.txt']
+const UE4SS_RELEASE = 'https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest'
+const WIN64 = '<Steam>\\steamapps\\common\\Whiskerwood\\Whiskerwood\\Binaries\\Win64\\'
+const SIGNATURE = [
+  '   function Register()',
+  '       return "4C 8B DC 55 53 41 56 49 8D AB ? ? ? ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 8B 41"',
+  '   end',
+  '',
+  '   function OnMatchFound(MatchAddress)',
+  '       return MatchAddress',
+  '   end',
+]
 const VERSION_RE = /^\d+(\.\d+){0,3}$/
 const DEFAULT_VERSION = '1.0.0'
 
@@ -91,7 +103,7 @@ function vendorLibs(config: ServerConfig, sources: string[]): Vendored {
   return { entries, modules: modules.sort(), missing }
 }
 
-function installNote(mod: ModProject, version: string): string {
+function installNoteRu(mod: ModProject, version: string): string {
   const title = `${mod.name} ${version} — мод для Whiskerwood`
   const lines = [title, '='.repeat(title.length)]
   if (mod.meta?.description) lines.push(mod.meta.description)
@@ -100,12 +112,27 @@ function installNote(mod: ModProject, version: string): string {
     'Требования',
     '----------',
     `- Whiskerwood ${mod.meta?.game_version ?? 'см. страницу мода'}`,
-    '- UE4SS, уже установленный в игру',
+    '- UE4SS, установленный в игру (как — ниже)',
     '',
-    'Установка',
-    '---------',
+    'Шаг 1. UE4SS (пропусти, если уже стоит)',
+    '---------------------------------------',
+    '1. Скачай сборку "experimental-latest" (обычный zip, не -dev):',
+    `   ${UE4SS_RELEASE}`,
+    '   Стабильный 3.0.1 НЕ подойдёт — в нём нет поддержки UE 5.6.',
+    '2. Распакуй так, чтобы файл dwmapi.dll и папка ue4ss\\ легли прямо в',
+    `   ${WIN64}`,
+    '3. Создай файл ue4ss\\UE4SS_Signatures\\StaticConstructObject.lua с текстом:',
+    '',
+    ...SIGNATURE,
+    '',
+    '   Без этого файла игра не запустится: UE4SS не найдёт',
+    '   StaticConstructObject_Internal и упадёт на скане сигнатур.',
+    '4. Запусти игру и убедись, что она стартует.',
+    '',
+    'Шаг 2. Мод',
+    '----------',
     '1. Открой папку модов UE4SS:',
-    '   <Steam>\\steamapps\\common\\Whiskerwood\\Whiskerwood\\Binaries\\Win64\\ue4ss\\Mods\\',
+    `   ${WIN64}ue4ss\\Mods\\`,
     `2. Скопируй туда из архива папку "${mod.name}" целиком.`,
     '3. Открой в той же папке файл mods.txt блокнотом и добавь строку',
     '',
@@ -121,6 +148,56 @@ function installNote(mod: ModProject, version: string): string {
     'Удаление',
     '--------',
     `Удали папку Mods\\${mod.name} и строку ${mod.name} из mods.txt.`,
+    '',
+  )
+  return lines.join('\r\n')
+}
+
+function installNoteEn(mod: ModProject, version: string): string {
+  const title = `${mod.name} ${version} — a mod for Whiskerwood`
+  const lines = [title, '='.repeat(title.length)]
+  if (mod.meta?.description) lines.push(mod.meta.description)
+  lines.push(
+    '',
+    'Requirements',
+    '------------',
+    `- Whiskerwood ${mod.meta?.game_version ?? 'see the mod page'}`,
+    '- UE4SS installed into the game (see below)',
+    '',
+    'Step 1. UE4SS (skip if already installed)',
+    '-----------------------------------------',
+    '1. Download the "experimental-latest" build (the plain zip, not the -dev one):',
+    `   ${UE4SS_RELEASE}`,
+    '   The stable 3.0.1 release will NOT work — it has no UE 5.6 support.',
+    '2. Unpack it so that dwmapi.dll and the ue4ss\\ folder end up directly in',
+    `   ${WIN64}`,
+    '3. Create the file ue4ss\\UE4SS_Signatures\\StaticConstructObject.lua containing:',
+    '',
+    ...SIGNATURE,
+    '',
+    '   Without this file the game will not start: UE4SS fails to find',
+    '   StaticConstructObject_Internal and dies during the signature scan.',
+    '4. Launch the game and make sure it starts.',
+    '',
+    'Step 2. The mod',
+    '---------------',
+    '1. Open the UE4SS mods folder:',
+    `   ${WIN64}ue4ss\\Mods\\`,
+    `2. Copy the whole "${mod.name}" folder from this archive into it.`,
+    '3. Open mods.txt in the same folder and add the line',
+    '',
+    `   ${mod.name} : 1`,
+    '',
+    '   ABOVE the "; Built-in keybinds, do not move up!" comment.',
+    '4. Start the game.',
+    '',
+    'Verify',
+    '------',
+    `ue4ss\\UE4SS.log should contain lines prefixed with [${mod.name}].`,
+    '',
+    'Uninstall',
+    '---------',
+    `Delete the Mods\\${mod.name} folder and the ${mod.name} line from mods.txt.`,
     '',
   )
   return lines.join('\r\n')
@@ -212,10 +289,15 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
   }
 
   const entries: ZipEntry[] = []
-  let readme = ''
+  let readmeRu = ''
+  let readmeEn = ''
   for (const rel of files) {
-    if (README_NAMES.includes(rel)) {
-      readme = readFileSync(`${mod.root}/${rel}`, 'utf8')
+    if (README_RU.includes(rel)) {
+      readmeRu = readFileSync(`${mod.root}/${rel}`, 'utf8')
+      continue
+    }
+    if (README_EN.includes(rel)) {
+      readmeEn = readmeEn || readFileSync(`${mod.root}/${rel}`, 'utf8')
       continue
     }
     if (rel === MOD_MANIFEST) continue
@@ -228,12 +310,11 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     data: Buffer.from(`${JSON.stringify(shipped, null, 2)}\n`, 'utf8'),
   })
   for (const e of vendored.entries) entries.push({ path: `${mod.name}/${e.path}`, data: e.data })
-  const note = readme || installNote(mod, version)
   // BOM: файл открывают блокнотом, без него кириллица читается как cp1251
-  entries.push({
-    path: 'УСТАНОВКА.txt',
-    data: Buffer.from(note.startsWith('﻿') ? note : `﻿${note}`, 'utf8'),
-  })
+  const withBom = (text: string): Buffer =>
+    Buffer.from(text.startsWith('﻿') ? text : `﻿${text}`, 'utf8')
+  entries.push({ path: 'УСТАНОВКА.txt', data: withBom(readmeRu || installNoteRu(mod, version)) })
+  entries.push({ path: 'INSTALL.txt', data: withBom(readmeEn || installNoteEn(mod, version)) })
 
   const distDir = `${config.modsRepo}/dist`
   mkdirSync(distDir, { recursive: true })
@@ -257,7 +338,8 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     files: entries.length,
     root_folder: `${mod.name}/`,
     vendored_libs: vendored.modules.length > 0 ? vendored.modules.join(', ') : 'нет',
-    readme: readme ? 'взят из мода' : 'сгенерирован',
+    readme_ru: readmeRu ? 'взят из мода' : 'сгенерирован',
+    readme_en: readmeEn ? 'взят из мода' : 'сгенерирован',
     manifest: manifestState,
     ...(picked.bumped
       ? {
@@ -271,6 +353,6 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
             'хуки ставятся только через WWRegisterHook: у игрока WWBridge нет, глобали не существует и хуки не встанут. Ставь их через require("ww.hook")',
         }
       : {}),
-    next: 'распакуй архив и проверь установку по УСТАНОВКА.txt',
+    next: 'распакуй архив и проверь установку по УСТАНОВКА.txt / INSTALL.txt',
   })
 }
