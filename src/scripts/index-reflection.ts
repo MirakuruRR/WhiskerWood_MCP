@@ -1,11 +1,9 @@
 import { Database } from 'bun:sqlite'
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
 import { INDEX_SCHEMA_SQL, INDEX_SCHEMA_VERSION } from '../schema'
 import { ServerConfig } from '../config'
 import { lastSegment, normalizeDumpPath, outerOf, packageOf } from './parsers/path-forms'
 import { parseObjectDump } from './parsers/object-dump'
-import { BP_KINDS, OLD_SCALAR_TYPES, parseGObjectsDump } from './parsers/gobjects'
 import { parseUsmap, usmapTypeToString } from './parsers/usmap'
 import { parseUhtModules, UhtFunction } from './parsers/uht'
 import { parseAssetRegistry } from './parsers/asset-registry'
@@ -35,7 +33,6 @@ async function sha256OfFile(path: string): Promise<string> {
 
 export interface ReflectionInputs {
   objectDumpPath: string
-  oldDumpPath: string | null
   usmapPath: string
   uhtDir: string
   assetRegistryPath: string
@@ -89,28 +86,16 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
     hookPath: string | null
     objectPath: string | null
     hookStatus: 'ok' | 'bp_asset_unresolved' | 'bp_asset_ambiguous'
-    source: 'new' | 'old'
   }
 
   const objects = new Map<string, ObjAcc>()
-  const ambiguousBp = new Map<string, string[]>()
-
-  const addRawPath = (addr: string, kind: string, rawPath: string, isBlueprint: boolean, source: 'new' | 'old'): ObjAcc | null => {
+  const addRawPath = (addr: string, kind: string, rawPath: string, isBlueprint: boolean): ObjAcc | null => {
     const norm = normalizeDumpPath(rawPath)
-    let path = norm.indexPath
+    const path = norm.indexPath
     const existing = objects.get(path)
     if (existing) {
-      if (existing.source === 'new' || source === 'new') {
-        if (!existing.gameFullPath && norm.gameFullPath) existing.gameFullPath = norm.gameFullPath
-        return existing
-      }
-      const alt = norm.gameFullPath ?? `${path}__dup`
-      path = alt
-      if (isBlueprint) {
-        const list = ambiguousBp.get(norm.indexPath) ?? [existing.path]
-        list.push(path)
-        ambiguousBp.set(norm.indexPath, list)
-      }
+      if (!existing.gameFullPath && norm.gameFullPath) existing.gameFullPath = norm.gameFullPath
+      return existing
     }
     const name = lastSegment(path)
     const row: ObjAcc = {
@@ -119,21 +104,20 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
       package: packageOf(path),
       outerPath: kind === 'Function' ? outerOf(path) : kind === 'Package' ? null : packageOf(path),
       name,
-      dumpIndex: source === 'new' ? parseInt(addr, 16) : null,
+      dumpIndex: parseInt(addr, 16),
       superPath: null,
       isBlueprint: isBlueprint ? 1 : 0,
       gameFullPath: norm.gameFullPath,
       hookPath: null,
       objectPath: null,
       hookStatus: 'ok',
-      source,
     }
     objects.set(path, row)
     return row
   }
 
   for (const o of dump.objects) {
-    addRawPath(o.addr, o.kind, o.rawPath, o.isBlueprint, 'new')
+    addRawPath(o.addr, o.kind, o.rawPath, o.isBlueprint)
   }
 
   for (const o of dump.objects) {
@@ -198,66 +182,6 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
     }
   }
 
-  let oldBpClasses = 0
-  let oldBpFunctions = 0
-  if (inputs.oldDumpPath && existsSync(inputs.oldDumpPath)) {
-    const oldClasses = new Set<string>()
-    for await (const obj of parseGObjectsDump(inputs.oldDumpPath)) {
-      if (BP_KINDS.has(obj.kind)) {
-        if (obj.name.startsWith('Default__')) continue
-        if (objects.has(obj.path)) continue
-        const row: ObjAcc = {
-          path: obj.path,
-          kind: obj.kind,
-          package: obj.package,
-          outerPath: obj.package,
-          name: obj.name,
-          dumpIndex: obj.dumpIndex,
-          superPath: null,
-          isBlueprint: 1,
-          gameFullPath: null,
-          hookPath: null,
-          objectPath: null,
-          hookStatus: 'ok',
-          source: 'old',
-        }
-        objects.set(obj.path, row)
-        oldClasses.add(obj.path)
-        oldBpClasses++
-      } else if (obj.kind === 'Function' && obj.outerPath && oldClasses.has(obj.outerPath)) {
-        if (objects.has(obj.path)) continue
-        objects.set(obj.path, {
-          path: obj.path,
-          kind: 'Function',
-          package: packageOf(obj.path),
-          outerPath: obj.outerPath,
-          name: obj.name,
-          dumpIndex: obj.dumpIndex,
-          superPath: null,
-          isBlueprint: 0,
-          gameFullPath: null,
-          hookPath: null,
-          objectPath: null,
-          hookStatus: 'ok',
-          source: 'old',
-        })
-        const arr = obj.members.map((mm) => ({
-          ordinal: mm.ordinal,
-          offset: mm.offset,
-          propKind: mm.propKind,
-          name: mm.name,
-          typeName: OLD_SCALAR_TYPES[mm.propKind] ?? null,
-          innerType: null,
-          isReturn: mm.name === 'ReturnValue' ? 1 : 0,
-          source: OLD_SCALAR_TYPES[mm.propKind] ? 'objdump' : 'none',
-        }))
-        params.set(obj.path, arr)
-        oldBpFunctions++
-      }
-    }
-  }
-  meta.union_bp_classes_from_menu_dump = oldBpClasses
-  meta.union_bp_functions_from_menu_dump = oldBpFunctions
 
   const registryAssetsByPath = new Map<string, { name: string; className: string }>()
   const bpAssetNames = new Map<string, string[]>()

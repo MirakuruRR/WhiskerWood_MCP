@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "setup": "bun run src/scripts/setup.ts",
+    "dumps:pull": "bun run src/scripts/pull-dumps.ts",
     "serve": "bun run src/stdio.ts",
     "bridge:deploy": "bun run src/scripts/deploy-bridge.ts",
     "bridge:spikes": "bun run src/scripts/bridge-spikes.ts",

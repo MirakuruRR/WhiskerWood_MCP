@@ -2,6 +2,12 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
+export class ProfileBusyError extends Error {
+  constructor(readonly path: string) {
+    super(`каталог профиля занят другим процессом: ${path}`)
+  }
+}
+
 async function renameWithRetry(from: string, to: string, attempts = 6): Promise<void> {
   let delay = 100
   for (let i = 0; i < attempts; i++) {
@@ -10,7 +16,8 @@ async function renameWithRetry(from: string, to: string, attempts = 6): Promise<
       return
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code
-      if (i === attempts - 1 || !['EPERM', 'EBUSY', 'EACCES', 'EEXIST'].includes(code ?? '')) throw e
+      if (!['EPERM', 'EBUSY', 'EACCES', 'EEXIST'].includes(code ?? '')) throw e
+      if (i === attempts - 1) throw new ProfileBusyError(from)
       if (typeof Bun !== 'undefined') Bun.gc(true)
       await new Promise((r) => setTimeout(r, delay))
       delay *= 2

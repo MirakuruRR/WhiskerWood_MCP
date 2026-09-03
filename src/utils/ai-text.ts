@@ -59,8 +59,11 @@ export function renderAiText(report: AiTextReport): string {
 }
 
 export function errorText(reportType: string, status: string, message: string): string {
+  const lines = message.replace(/\r/g, '').split('\n')
+  const first = (lines[0] ?? '').trim()
   return renderAiText({
     reportType,
-    fields: { status, error: message },
+    fields: { status, error: first },
+    results: lines.length > 1 ? [{ fields: {}, blocks: { details: message } }] : undefined,
   })
 }

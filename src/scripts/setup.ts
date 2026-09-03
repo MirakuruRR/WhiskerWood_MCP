@@ -4,7 +4,7 @@ import { ConfigError, loadConfig, validateConfig } from '../config'
 import { ProfileContract } from '../contract'
 import { INDEX_SCHEMA_VERSION } from '../schema'
 import { ensureFingerprint } from '../utils/game-fingerprint'
-import { publishStagedProfile, stagingDirFor, sweepStagingAndTrash } from '../utils/profile-publish'
+import { ProfileBusyError, publishStagedProfile, stagingDirFor, sweepStagingAndTrash } from '../utils/profile-publish'
 import { profileIdFor } from '../contract'
 import { buildReflectionIndex } from './index-reflection'
 import { buildGameDataIndex } from './index-gamedata'
@@ -52,6 +52,10 @@ function findUsmap(dumpsDir: string): { path: string; capturedAt: string } | nul
   return { path: `${dumpsDir}/${chosen}`, capturedAt: chosen.includes('.in_level.') ? 'in_level' : 'main_menu' }
 }
 
+function fmtTime(ms: number): string {
+  return new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
+}
+
 function detectEngineVersion(usmapPath: string): string {
   const base = usmapPath.split('/').pop() ?? ''
   const m = /^Whiskerwood-(.+)-[0-9a-f]{6,}\./.exec(base)
@@ -72,6 +76,7 @@ function detectUe4ssVersion(logPath: string): string {
 
 async function main(): Promise<void> {
   const force = process.argv.includes('--force')
+  const allowStale = process.argv.includes('--allow-stale-dumps')
 
   let cfg
   try {
@@ -91,7 +96,6 @@ async function main(): Promise<void> {
   }
 
   const objectDumpPath = `${cfg.dumpsDir}/UE4SS_ObjectDump.txt`
-  const oldDumpPath = `${cfg.dumpsDir}/GObjects-Dump-WithProperties.txt`
   const uhtDir = `${cfg.dumpsDir}/UHTHeaderDump`
   const assetRegistryPath = `${cfg.dumpsDir}/pak/Whiskerwood/AssetRegistry.bin`
   const usmap = findUsmap(cfg.dumpsDir)
@@ -111,6 +115,37 @@ async function main(): Promise<void> {
   const fp = await ensureFingerprint(cfg)
   console.log(`  версия игры: ${fp.projectVersion}`)
 
+  const pakMtime = statSync(cfg.pakPath).mtimeMs
+  const dumpInputs: Array<[string, string]> = [
+    ['UE4SS_ObjectDump.txt', objectDumpPath],
+    ['usmap', usmap!.path],
+    ['UHTHeaderDump/', uhtDir],
+    ['AssetRegistry.bin', assetRegistryPath],
+  ]
+  console.log(`Свежесть входов (пак: ${fmtTime(pakMtime)}):`)
+  const stale: string[] = []
+  for (const [label, path] of dumpInputs) {
+    const m = statSync(path).mtimeMs
+    if (m < pakMtime) stale.push(label)
+    console.log(`  ${label.padEnd(21)} ${fmtTime(m)}${m < pakMtime ? '  ← СТАРШЕ ПАКА' : ''}`)
+  }
+  console.log(`  дамп снят: ${usmap!.capturedAt}`)
+  if (stale.length > 0) {
+    const head = `Дампы старше пака: ${stale.join(', ')}. Игра обновилась, а дампы не переснимали.`
+    if (!allowStale) {
+      console.error(head)
+      console.error('Собирать из них нельзя: .usmap от прошлой версии ломает разбор молча —')
+      console.error('таблицы с изменившимся layout отдают ноль строк без единой ошибки.')
+      console.error('  1. Игра с AutoDump : 1, войти в сохранение, дождаться в UE4SS.log строки')
+      console.error('     "ALL DONE captured_at=in_level"')
+      console.error('  2. bun run dumps:pull')
+      console.error('  3. bun run setup')
+      console.error('Собрать вопреки проверке: --allow-stale-dumps')
+      process.exit(1)
+    }
+    console.warn(`${head} Продолжаю из-за --allow-stale-dumps.`)
+  }
+
   const profileId = profileIdFor(fp.projectVersion)
   const fpPath = `${cfg.stateDir}/build-fingerprint.json`
   const cachedBuildFp: BuildFingerprint | null = existsSync(fpPath)
@@ -121,7 +156,6 @@ async function main(): Promise<void> {
     objectDump: objectDumpPath,
     usmap: usmap!.path,
     assetRegistry: assetRegistryPath,
-    oldDump: existsSync(oldDumpPath) ? oldDumpPath : '',
     pak: cfg.pakPath,
   }
   const cheapInputs = new Set(['pak'])
@@ -155,7 +189,6 @@ async function main(): Promise<void> {
   const t0 = Date.now()
   const summary = await buildReflectionIndex(`${staging}/index.db`, cfg, {
     objectDumpPath,
-    oldDumpPath: existsSync(oldDumpPath) ? oldDumpPath : null,
     usmapPath: usmap!.path,
     uhtDir,
     assetRegistryPath,
@@ -175,29 +208,6 @@ async function main(): Promise<void> {
   })
   console.log(`  ${gamedata.meta.sidecar_log}`)
 
-  const contract: ProfileContract = {
-    profileId,
-    gameId: 'whiskerwood',
-    gameVersion: fp.projectVersion,
-    schemaVersion: INDEX_SCHEMA_VERSION,
-    indexRevision: summary.meta.built_at as string,
-    builtAt: summary.meta.built_at as string,
-    dumpCapturedAt: usmap!.capturedAt,
-    typeSourcePrimary: 'uht',
-  }
-  writeFileSync(`${staging}/profile.json`, JSON.stringify(contract, null, 2))
-
-  const target = await publishStagedProfile(staging, cfg.distDir, profileId)
-  const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
-
-  const newBuildFp: BuildFingerprint = { schemaVersion: INDEX_SCHEMA_VERSION, profileId, inputs: {} }
-  for (const [key, path] of Object.entries(inputPaths)) {
-    if (!path) continue
-    newBuildFp.inputs[key] = await fingerprintInput(path, cachedBuildFp?.inputs[key], !cheapInputs.has(key))
-  }
-  writeFileSync(fpPath, JSON.stringify(newBuildFp, null, 2))
-
-  console.log(`Готово за ${elapsed}с: ${target}`)
   console.log('Ключевые метрики:')
   const keys = [
     'objects_total',
@@ -220,22 +230,60 @@ async function main(): Promise<void> {
     console.log(`  ${k}: ${gamedata.meta[k]}`)
   }
 
+  const abort = (code: number, phase: string): never => {
+    console.error(`Приёмочные критерии ${phase} НЕ выполнены — профиль не опубликован.`)
+    console.error(`Прежний профиль остался в силе, черновик: ${staging}`)
+    process.exit(code)
+  }
+
   console.log('Приёмочные проверки фазы 1:')
   console.log(`  SetResearchTopic найден с hook_path: ${summary.acceptance.setResearchTopicFound}`)
   console.log(`  startResearch найден (ожидается ЛОЖЬ): ${summary.acceptance.startResearchFound}`)
   console.log(`  MouseMessageBlip_C.Construct hook_path: ${summary.acceptance.mouseBlipHookPath ?? 'НЕТ'}`)
   if (!summary.acceptance.setResearchTopicFound || summary.acceptance.startResearchFound || !summary.acceptance.mouseBlipHookPath) {
-    console.error('Приёмочные критерии фазы 1 НЕ выполнены')
-    process.exit(2)
+    abort(2, 'фазы 1')
   }
 
   console.log('Приёмочные проверки фазы 3:')
   console.log(`  TechUnlocksV2 строк: ${gamedata.acceptance.techUnlocksRows} (пример ключа: ${gamedata.acceptance.techUnlocksSampleKey ?? 'НЕТ'})`)
   console.log(`  mod.desc.starvation [Ru]: ${gamedata.acceptance.starvationRu ?? 'НЕТ'}`)
   if (gamedata.acceptance.techUnlocksRows === 0 || !gamedata.acceptance.starvationRu) {
-    console.error('Приёмочные критерии фазы 3 НЕ выполнены')
-    process.exit(3)
+    abort(3, 'фазы 3')
   }
+
+  const contract: ProfileContract = {
+    profileId,
+    gameId: 'whiskerwood',
+    gameVersion: fp.projectVersion,
+    schemaVersion: INDEX_SCHEMA_VERSION,
+    indexRevision: summary.meta.built_at as string,
+    builtAt: summary.meta.built_at as string,
+    dumpCapturedAt: usmap!.capturedAt,
+    typeSourcePrimary: 'uht',
+  }
+  writeFileSync(`${staging}/profile.json`, JSON.stringify(contract, null, 2))
+
+  let target: string
+  try {
+    target = await publishStagedProfile(staging, cfg.distDir, profileId)
+  } catch (e) {
+    if (!(e instanceof ProfileBusyError)) throw e
+    console.error(`Индекс собран и проверки прошли, но опубликовать не вышло: ${e.path} занят.`)
+    console.error('Каталог держит запущенный MCP-сервер (bun run src/stdio.ts) — Windows не даёт его подменить.')
+    console.error('Останови сервер (в Claude Code — /mcp, перезапуск whiskerwood) и повтори bun run setup --force.')
+    console.error('Действующий профиль не пострадал.')
+    process.exit(4)
+  }
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+
+  const newBuildFp: BuildFingerprint = { schemaVersion: INDEX_SCHEMA_VERSION, profileId, inputs: {} }
+  for (const [key, path] of Object.entries(inputPaths)) {
+    if (!path) continue
+    newBuildFp.inputs[key] = await fingerprintInput(path, cachedBuildFp?.inputs[key], !cheapInputs.has(key))
+  }
+  writeFileSync(fpPath, JSON.stringify(newBuildFp, null, 2))
+
+  console.log(`Готово за ${elapsed}с: ${target}`)
 }
 
 main().catch((e) => {
