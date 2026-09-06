@@ -649,10 +649,23 @@
   status: caution
   verified: doc
   pitfalls: |
+    Структуру родных панелей — класс, видимость, текстура кисти, текст, слот и выравнивание —
+    дампит ww_ui_tree; не пиши ручной обход виджетов через ww_game_eval.
     Сначала проверь родные подсистемы уведомлений игры (ww_find_symbol NotificationBoard,
     ProblemIndicator): самодельный оверлей выглядит чужеродно и ломается при смене разрешения.
     Вся сборка — внутри ExecuteInGameThread.
     Виджет, созданный до загрузки уровня, умирает вместе с картой меню.
+
+- symbol: EHorizontalAlignment / EVerticalAlignment
+  category: ui
+  signature: 'HAlign: Fill=0, Left=1, Center=2, Right=3; VAlign: Fill=0, Top=1, Center=2, Bottom=3'
+  summary: Выравнивание слотов UMG/Slate (CanvasPanelSlot.HorizontalAlignment и VerticalAlignment); в рефлексии — SlateCore.EHorizontalAlignment / SlateCore.EVerticalAlignment.
+  status: ok
+  verified: doc
+  pitfalls: |
+    Единица — это Left/Top, а не Center: постановка «по памяти» прижимает виджет к краю.
+    Значения сняты с индекса 0.7.200; после патча игры сверяй через ww_get_type.
+    ww_ui_tree печатает выравнивание слота именами (halign/valign) — числа расшифровывать не надо.
 
 - symbol: require
   category: mod

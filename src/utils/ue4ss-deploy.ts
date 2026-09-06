@@ -5,18 +5,33 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 
 export type LinkMode = 'junction' | 'copy'
 
 export function linkModDir(sourceDir: string, targetDir: string): LinkMode {
+  const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase()
   if (existsSync(targetDir)) {
     const st = lstatSync(targetDir)
-    if (st.isSymbolicLink()) rmSync(targetDir, { force: true })
-    else rmSync(targetDir, { recursive: true, force: true })
+    if (st.isSymbolicLink()) {
+      try {
+        if (norm(readlinkSync(targetDir)) === norm(sourceDir)) {
+          return 'junction'
+        }
+      } catch {}
+      try {
+        unlinkSync(targetDir)
+      } catch {
+        rmSync(targetDir, { force: true, recursive: true })
+      }
+    } else {
+      rmSync(targetDir, { recursive: true, force: true })
+    }
   }
   try {
     symlinkSync(sourceDir, targetDir, 'junction')

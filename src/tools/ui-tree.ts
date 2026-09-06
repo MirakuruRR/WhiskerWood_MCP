@@ -11,6 +11,7 @@ export interface UiTreeArgs {
 }
 
 // ESlateVisibility: 0 Visible, 1 Collapsed, 2 Hidden, 3 HitTestInvisible, 4 SelfHitTestInvisible
+// SlateCore.EHorizontalAlignment / EVerticalAlignment, значения из индекса 0.7.200
 function chunk(root: string, field: string | undefined, depth: number): string {
   const start = field
     ? `local owner = FindFirstOf([[${root}]])
@@ -26,6 +27,13 @@ if not node or not node:IsValid() then node = owner end`
   return `
 ${start}
 local VIS = { [0] = "Visible", [1] = "Collapsed", [2] = "Hidden", [3] = "HitTestInvisible", [4] = "SelfHitTestInvisible" }
+local HALIGN = { [0] = "Fill", [1] = "Left", [2] = "Center", [3] = "Right" }
+local VALIGN = { [0] = "Fill", [1] = "Top", [2] = "Center", [3] = "Bottom" }
+local function align(v, map)
+  if type(v) == "number" then return map[v] end
+  if type(v) == "string" then return v:gsub("^HAlign_", ""):gsub("^VAlign_", "") end
+  return nil
+end
 local out = {}
 local function describe(w)
   local bits = {}
@@ -46,7 +54,12 @@ local function describe(w)
   end)
   pcall(function()
     local s = w.Slot
-    if s and s:IsValid() then bits[#bits + 1] = "slot=" .. s:GetClass():GetFName():ToString() end
+    if s and s:IsValid() then
+      bits[#bits + 1] = "slot=" .. s:GetClass():GetFName():ToString()
+      local ha, va = align(s.HorizontalAlignment, HALIGN), align(s.VerticalAlignment, VALIGN)
+      if ha then bits[#bits + 1] = "halign=" .. ha end
+      if va then bits[#bits + 1] = "valign=" .. va end
+    end
   end)
   return table.concat(bits, " ")
 end

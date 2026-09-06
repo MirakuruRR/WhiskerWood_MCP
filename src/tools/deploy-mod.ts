@@ -6,6 +6,7 @@ import { PathSandboxError } from '../utils/path-sandbox'
 import { loadModProject, ModProject } from '../utils/mod-project'
 import { analyzeLua } from '../utils/lua-analyzer'
 import { enableInModsTxt, linkModDir, linkSharedLibs } from '../utils/ue4ss-deploy'
+import { loadSlot, readLoadOrder } from '../utils/ue4ss-mods'
 import { getBridge } from '../utils/bridge-client'
 import { bridgeFailureFields, echoFields } from './bridge-common'
 
@@ -69,6 +70,7 @@ export async function handleDeployMod(ctx: GameContext | null, config: ServerCon
     }
     const res = await bridge.call('load_mod', mod.entry, Math.max(config.bridgeTimeoutMs, 10000))
     if (res.status === 'ok') {
+      const slot = loadSlot(readLoadOrder(config), mod.name)
       return report(ctx, {
         status: 'ok',
         mode,
@@ -80,6 +82,12 @@ export async function handleDeployMod(ctx: GameContext | null, config: ServerCon
           ? {
               warning:
                 'мод вызывает RegisterHook напрямую: мост не сможет снять эти хуки при следующей загрузке, и коллбэки начнут срабатывать по нескольку раз. Перейди на WWRegisterHook',
+            }
+          : {}),
+        ...(slot?.enabled
+          ? {
+              warning_double_load:
+                'мод дополнительно включён в mods.txt: вместе с копией моста после старта игры будут работать два экземпляра, хуки задвоятся. Убери строку из mods.txt или не перезапускай игру с этим модом',
             }
           : {}),
         next: 'проверь работу через ww_game_log и ww_game_eval; повторный вызов перезагрузит мод',
