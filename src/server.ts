@@ -16,6 +16,7 @@ import { handleUiTree } from './tools/ui-tree'
 import { handleTraceCalls } from './tools/trace-calls'
 import { handleGameConsole } from './tools/game-console'
 import { handleGameLog } from './tools/game-log'
+import { handleCrashReport } from './tools/crash-report'
 import { handleGetDataTable } from './tools/get-datatable'
 import { handleResolveLoc } from './tools/resolve-loc'
 import { handleFindAsset } from './tools/find-asset'
@@ -405,6 +406,23 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge(async (ctx, args) => handleGameLog(ctx, config, args)),
   )
 
+  server.registerTool(
+    'ww_crash_report',
+    {
+      title: 'Разбор краша игры',
+      description:
+        'Разбор краша без ручного лазанья по %LOCALAPPDATA%: сам находит свежий дамп в Saved/Crashes, достаёт ErrorMessage и код исключения из CrashContext.runtime-xml, подшивает хвост UE4SS.log до момента краша (из текущего лога или архива state/logs) и список включённых модов. Символов в Shipping-дампе нет, поэтому связка «адрес + последняя активность модов в логе» — основной материал. Работает при выключенной игре. Без аргументов — последний краш; list: true — список крашей с датами; crash: подстрока имени каталога дампа.',
+      inputSchema: {
+        crash: z.string().optional().describe('Подстрока имени каталога дампа (UECC-Windows-...); по умолчанию последний краш'),
+        list: z.boolean().optional().describe('Список последних крашей вместо разбора'),
+        limit: z.number().int().positive().max(100).optional().describe('Сколько крашей показать в list, по умолчанию 10'),
+        tail: z.number().int().positive().max(200).optional().describe('Сколько строк лога до краша подшить, по умолчанию 30'),
+        version: versionParam,
+      },
+      annotations: LIVE_READ,
+    },
+    wrapBridge(async (ctx, args) => handleCrashReport(ctx, config, args)),
+  )
 
   server.registerTool(
     'ww_lua_api',

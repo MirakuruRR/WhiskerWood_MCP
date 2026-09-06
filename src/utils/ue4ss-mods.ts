@@ -8,6 +8,7 @@ const SHARED_LIBS = 'shared'
 export interface LoadSlot {
   index: number
   enabled: boolean
+  name: string
 }
 
 export interface InstalledMod extends ModProject {
@@ -49,7 +50,7 @@ export function readLoadOrder(config: ServerConfig): Map<string, LoadSlot> {
     if (at < 0) continue
     const name = line.slice(0, at).trim()
     if (name.length === 0) continue
-    out.set(name.toLowerCase(), { index: index++, enabled: /^1\b/.test(line.slice(at + 1).trim()) })
+    out.set(name.toLowerCase(), { index: index++, enabled: /^1\b/.test(line.slice(at + 1).trim()), name })
   }
   return out
 }

@@ -13,7 +13,7 @@ const HEAD_RE = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.\d+\]\s?(.*)$/
 const LUA_RE = /^\[Lua\]\s*\[([^\]]+)\]\s?(.*)$/
 const ERROR_RE = /^(ERROR|Error|error)\b|^\[Error\]|Lua Error|LuaError|error executing/
 const WARN_RE = /^(WARNING|Warning|warning)\b|^\[Warning\]/
-const SESSION_MARKER = 'Console created'
+export const SESSION_MARKER = 'Console created'
 
 function classify(text: string): LogLevel {
   if (ERROR_RE.test(text)) return 'error'
