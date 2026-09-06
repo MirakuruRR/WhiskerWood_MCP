@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { ServerConfig } from '../config'
 
@@ -92,4 +92,96 @@ export function captureWindowPng(config: ServerConfig, pid: number): { ok: boole
   const stderr = new TextDecoder().decode(p.stderr).trim()
   if (p.exitCode === 0 && stdout === 'ok') return { ok: true, path: out }
   return { ok: false, path: out, error: (stderr || stdout).replace(/\s+/g, ' ').slice(0, 300) }
+}
+
+export interface CropRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export interface PostProcessResult {
+  ok: boolean
+  master: string
+  attach: string
+  attachMime: 'image/png' | 'image/jpeg'
+  error?: string
+}
+
+const KEEP_PER_PREFIX = 20
+
+function sweepScreenshotDir(dir: string): void {
+  for (const prefix of ['wwmcp-attach-', 'wwmcp-crop-', 'wwmcp-window-']) {
+    let files: string[]
+    try {
+      files = readdirSync(dir).filter((f) => f.startsWith(prefix))
+    } catch {
+      continue
+    }
+    const stamped = files
+      .map((f) => ({ f, m: statSync(`${dir}/${f}`).mtimeMs }))
+      .sort((a, b) => b.m - a.m)
+    for (const old of stamped.slice(KEEP_PER_PREFIX)) {
+      try {
+        rmSync(`${dir}/${old.f}`)
+      } catch {
+        /* файл занят читателем — уйдёт в следующий раз */
+      }
+    }
+  }
+}
+
+// Пост-обработка мастер-кадра: кроп в нативе (PNG) либо ужатая копия JPEG q82 по боксу.
+// Мастер не переписывается: путь до него отдаётся в field file для сравнения между правками.
+export function postProcessScreenshot(
+  config: ServerConfig,
+  src: string,
+  crop: CropRect | null,
+  boxW: number,
+  boxH: number,
+  limitBytes: number,
+): PostProcessResult {
+  const dir = `${config.stateDir}/screenshots`
+  mkdirSync(dir, { recursive: true })
+  sweepScreenshotDir(dir)
+  const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '')
+  const outMaster = `${dir}/wwmcp-crop-${ts}.png`
+  const outAttach = `${dir}/wwmcp-attach-${ts}.jpg`
+  const c = crop
+    ? { x: Math.max(0, Math.round(crop.x)), y: Math.max(0, Math.round(crop.y)), w: Math.round(crop.w), h: Math.round(crop.h) }
+    : null
+  const script =
+    `Add-Type -AssemblyName System.Drawing;` +
+    `$src='${src}';$cx=${c ? c.x : -1};$cy=${c ? c.y : 0};$cw=${c ? c.w : 0};$ch=${c ? c.h : 0};` +
+    `$om='${outMaster}';$oa='${outAttach}';$bw=${boxW};$bh=${boxH};$limit=${limitBytes};` +
+    `$img=[System.Drawing.Image]::FromFile($src);$work=$img;$master=$src;` +
+    `if($cx -ge 0){$bx=$cx;$by=$cy;$wd=[Math]::Min($img.Width-$bx,$cw);$ht=[Math]::Min($img.Height-$by,$ch);` +
+    `if($wd -le 0 -or $ht -le 0 -or $bx -ge $img.Width -or $by -ge $img.Height){'crop_out_of_bounds';exit 1};` +
+    `$rect=New-Object System.Drawing.Rectangle $bx,$by,$wd,$ht;` +
+    `$work=([System.Drawing.Bitmap]$img).Clone($rect,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb);` +
+    `$work.Save($om,[System.Drawing.Imaging.ImageFormat]::Png);$master=$om};` +
+    `'master='+$master;` +
+    `if(($cx -ge 0) -and ((Get-Item $master).Length -le $limit)){'attach='+$master;'attach_mime=image/png'}` +
+    `else{$scale=[Math]::Min(1.0,[Math]::Min($bw/$work.Width,$bh/$work.Height));` +
+    `$nw=[int][Math]::Max(1.0,$work.Width*$scale);$nh=[int][Math]::Max(1.0,$work.Height*$scale);` +
+    `$dst=New-Object System.Drawing.Bitmap $nw,$nh;$g=[System.Drawing.Graphics]::FromImage($dst);` +
+    `$g.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic;` +
+    `$g.DrawImage($work,0,0,$nw,$nh);` +
+    `$codec=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' };` +
+    `$ep=New-Object System.Drawing.Imaging.EncoderParameters 1;` +
+    `$ep.Param[0]=New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality,[long]82);` +
+    `$dst.Save($oa,$codec,$ep);$g.Dispose();$dst.Dispose();'attach='+$oa;'attach_mime=image/jpeg'};` +
+    `if($work -ne $img){$work.Dispose()};$img.Dispose();'ok'`
+  const p = Bun.spawnSync(['powershell', '-NoProfile', '-NonInteractive', '-Command', script], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const stdout = new TextDecoder().decode(p.stdout).trim()
+  const stderr = new TextDecoder().decode(p.stderr).trim()
+  if (p.exitCode !== 0 || !stdout.split(/\r?\n/).includes('ok')) {
+    return { ok: false, master: src, attach: '', attachMime: 'image/jpeg', error: (stderr || stdout).replace(/\s+/g, ' ').slice(0, 300) }
+  }
+  const line = (key: string) => new RegExp(`^${key}=(.*)$`, 'm').exec(stdout)?.[1]?.trim() ?? ''
+  return { ok: true, master: line('master'), attach: line('attach'), attachMime: line('attach_mime') === 'image/png' ? 'image/png' : 'image/jpeg' }
 }

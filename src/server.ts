@@ -92,7 +92,7 @@ export function createServer(config: ServerConfig): McpServer {
   // Кадр игры приходит не только текстом: MCP позволяет вложить png прямо в ответ.
   const wrapBridgeImage =
     <A extends { version?: string }>(
-      fn: (ctx: GameContext | null, args: A) => Promise<{ text: string; pngBase64?: string }>,
+      fn: (ctx: GameContext | null, args: A) => Promise<{ text: string; pngBase64?: string; mime?: 'image/png' | 'image/jpeg' }>,
     ) =>
     async (args: A) => {
       let ctx: GameContext | null = null
@@ -106,7 +106,7 @@ export function createServer(config: ServerConfig): McpServer {
         const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [
           { type: 'text', text: out.text },
         ]
-        if (out.pngBase64) content.push({ type: 'image', data: out.pngBase64, mimeType: 'image/png' })
+        if (out.pngBase64) content.push({ type: 'image', data: out.pngBase64, mimeType: out.mime ?? 'image/png' })
         return { content }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
@@ -455,11 +455,23 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Скриншот из игры',
       description:
-        'Кадр из игры для визуальной проверки правок; картинка приходит прямо в ответ MCP-блоком image, путь до файла — в поле file. auto и window: снимок игрового окна (класс UnrealWindow) через PrintWindow — кадр с HUD, каким его видит игрок, работает даже перекрытым другим окном. engine: HighResShot через консоль моста в Saved/Screenshots/Windows — чистый мир в заданном разрешении, но БЕЗ UMG/HUD (проверено на 0.7.200): для правок шрифта, отступов, цвета и прижатых к краю стрелок бери window. mode: auto|window|engine; res: WxH или множитель для engine; attach_image: false — только путь, без картинки.',
+        'Кадр из игры для визуальной проверки правок; картинка приходит прямо в ответ MCP-блоком image, мастер-кадр копится по пути из field file для сравнения между правками. window/auto: снимок игрового окна (класс UnrealWindow) через PrintWindow — кадр с HUD, каким его видит игрок, работает даже перекрытым. engine: HighResShot через консоль моста — чистый мир в разрешении res, но БЕЗ UMG/HUD (проверено на 0.7.200): для шрифта, отступов и цвета бери window. Вложенная копия без crop — JPEG q82, вписанная в бокс res (window/auto) или ≤1920 (engine); с crop {x,y,w,h} в пикселях кадра — нативный PNG области ради пиксельной точности вёрстки. res в window/auto задаёт бокс вложенной копии (WxH), в engine — разрешение рендера; множитель только в engine. attach_image: false — только пути, без картинки.',
       inputSchema: {
-        mode: z.enum(['auto', 'engine', 'window']).optional().describe('По умолчанию auto: движок, при неудаче окно процесса'),
-        res: z.string().optional().describe('Разрешение кадра: 1280x720 или множитель 2; по умолчанию 1280x720'),
-        timeout_ms: z.number().int().positive().max(60000).optional().describe('Сколько ждать файл кадра, по умолчанию 15000'),
+        mode: z.enum(['auto', 'engine', 'window']).optional().describe('По умолчанию auto: окно игры, при неудаче HighResShot'),
+        res: z
+          .string()
+          .optional()
+          .describe('Бокс вложенной копии WxH (window/auto) или разрешение рендера (engine, можно множителем 2); по умолчанию 1280x720 в engine и 1920x1920 для копии'),
+        crop: z
+          .object({
+            x: z.number().int(),
+            y: z.number().int(),
+            w: z.number().int().positive(),
+            h: z.number().int().positive(),
+          })
+          .optional()
+          .describe('Область кропа в пикселях кадра, отсчёт от левого верхнего угла окна; вкладывается нативным PNG'),
+        timeout_ms: z.number().int().positive().max(60000).optional().describe('Сколько ждать файл кадра engine-пути, по умолчанию 15000'),
         attach_image: z.boolean().optional().describe('Прикладывать картинку в ответ; по умолчанию true'),
         version: versionParam,
       },
