@@ -1,0 +1,39 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__whiskerwood__ww_(game_eval|game_console|game_log|game_status|screenshot|ui_tree|trace_calls|verify_hook|deploy_mod)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run \"$CLAUDE_PROJECT_DIR/.claude/hooks/crash-watch.ts\" post",
+            "timeout": 15,
+            "statusMessage": "Проверка краша игры"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__whiskerwood__ww_(crash_report|game_process)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run \"$CLAUDE_PROJECT_DIR/.claude/hooks/crash-watch.ts\" ack",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run \"$CLAUDE_PROJECT_DIR/.claude/hooks/crash-watch.ts\" stop",
+            "timeout": 20,
+            "statusMessage": "Проверка краша игры"
+          }
+        ]
+      }
+    ]
+  }
+}
