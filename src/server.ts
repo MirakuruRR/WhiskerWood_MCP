@@ -553,10 +553,9 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Развернуть мод',
       description:
-        'mode=dev — загрузить мод в запущенную игру через мост WWBridge прямо из каталога разработки, со снятием хуков предыдущей загрузки; повторный вызов перезагружает мод без перезапуска игры. mode=release — junction (при отказе копия) в ue4ss/Mods/<Имя> плюс строка в mods.txt; подхватится при следующем старте игры. Сначала прогони ww_validate_mod.',
+        'Загрузить мод в запущенную игру через мост WWBridge прямо из каталога разработки, со снятием хуков предыдущей загрузки; повторный вызов перезагружает мод без перезапуска игры. Сначала прогони ww_validate_mod.',
       inputSchema: {
         mod_root: z.string().describe('Каталог мода'),
-        mode: z.enum(['dev', 'release']).optional().describe('По умолчанию dev'),
         version: versionParam,
       },
       annotations: LIVE_WRITE,

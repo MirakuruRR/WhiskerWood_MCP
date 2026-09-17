@@ -35,7 +35,7 @@
     Все аргументы приходят обёртками RemoteUnrealParam: обязателен :get().
     Ловятся вызовы, идущие через ProcessEvent; чисто нативные C++ -> C++ вызовы
     (Actor:K2_SetActorLocation, UserWidget:Tick) на стенде не сработали за 12 с игры.
-    В dev-цикле через ww_deploy_mod mode=dev используй WWRegisterHook, иначе хуки
+    В dev-цикле через ww_deploy_mod используй WWRegisterHook, иначе хуки
     накапливаются с каждой перезагрузкой и коллбэк срабатывает N раз.
     postFn НЕ вызывается для блюпринтовых функций (пути /Game/...): на стенде
     ProblemSummaryBannerWidget_C:GetToolTipWidget и TooltipFrame_C:ConfigureTooltip_AsText
@@ -691,7 +691,7 @@
     Точка входа обязана называться Scripts/main.lua.
     Мод без строки в mods.txt не загружается молча.
     Порядок строк в mods.txt задаёт порядок загрузки.
-    Развёртывание делает ww_deploy_mod — вручную junction и mods.txt не правь.
+    Для холодной загрузки (mods.txt) junction и строку в mods.txt правь вручную; ww_deploy_mod теперь только dev-загрузка через мост.
 
 - symbol: io.open
   category: mod

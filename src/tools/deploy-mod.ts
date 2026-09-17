@@ -5,14 +5,12 @@ import { renderAiText, Scalar } from '../utils/ai-text'
 import { PathSandboxError } from '../utils/path-sandbox'
 import { loadModProject, ModProject } from '../utils/mod-project'
 import { analyzeLua } from '../utils/lua-analyzer'
-import { enableInModsTxt, linkModDir, linkSharedLibs } from '../utils/ue4ss-deploy'
 import { loadSlot, readLoadOrder } from '../utils/ue4ss-mods'
 import { getBridge } from '../utils/bridge-client'
 import { bridgeFailureFields, echoFields } from './bridge-common'
 
 export interface DeployModArgs {
   mod_root: string
-  mode?: 'dev' | 'release'
 }
 
 function report(ctx: GameContext | null, fields: Record<string, Scalar>): string {
@@ -32,8 +30,6 @@ function usesDirectHooks(mod: ModProject): boolean {
 }
 
 export async function handleDeployMod(ctx: GameContext | null, config: ServerConfig, args: DeployModArgs): Promise<string> {
-  const mode = args.mode ?? 'dev'
-
   let mod: ModProject
   try {
     mod = loadModProject(config, args.mod_root)
@@ -57,71 +53,47 @@ export async function handleDeployMod(ctx: GameContext | null, config: ServerCon
     })
   }
 
-  if (mode === 'dev') {
-    const bridge = getBridge(config)
-    const st = await bridge.readStatusStable()
-    if (!bridge.isAlive(st)) {
-      return report(ctx, {
-        status: 'game_not_running',
-        mode,
-        mod: mod.name,
-        hint: 'dev-загрузка идёт через мост в живую игру. Запусти игру либо разверни мод как release',
-      })
-    }
-    const res = await bridge.call('load_mod', mod.entry, Math.max(config.bridgeTimeoutMs, 10000))
-    if (res.status === 'ok') {
-      const slot = loadSlot(readLoadOrder(config), mod.name)
-      return report(ctx, {
-        status: 'ok',
-        mode,
-        mod: mod.name,
-        entry: mod.entry,
-        result: res.body.trim().replace(/\s+/g, ' '),
-        elapsed_ms: res.elapsedMs,
-        ...(usesDirectHooks(mod)
-          ? {
-              warning:
-                'мод вызывает RegisterHook напрямую: мост не сможет снять эти хуки при следующей загрузке, и коллбэки начнут срабатывать по нескольку раз. Перейди на WWRegisterHook',
-            }
-          : {}),
-        ...(slot?.enabled
-          ? {
-              warning_double_load:
-                'мод дополнительно включён в mods.txt: вместе с копией моста после старта игры будут работать два экземпляра, хуки задвоятся. Убери строку из mods.txt или не перезапускай игру с этим модом',
-            }
-          : {}),
-        next: 'проверь работу через ww_game_log и ww_game_eval; повторный вызов перезагрузит мод',
-      })
-    }
-    if (res.status === 'error') {
-      return report(ctx, {
-        status: 'load_failed',
-        mode,
-        mod: mod.name,
-        entry: mod.entry,
-        error: res.body.trim().replace(/\s+/g, ' ').slice(0, 400),
-        hint: 'ошибка исполнения чанка мода; прогони ww_validate_mod и смотри ww_game_log',
-      })
-    }
-    return report(ctx, { mode, mod: mod.name, ...bridgeFailureFields(res) })
+  const bridge = getBridge(config)
+  const st = await bridge.readStatusStable()
+  if (!bridge.isAlive(st)) {
+    return report(ctx, {
+      status: 'game_not_running',
+      mod: mod.name,
+      hint: 'dev-загрузка идёт через мост в живую игру. Запусти игру',
+    })
   }
-
-  const targetDir = `${config.ue4ssDir}/Mods/${mod.name}`
-  const linkMode = linkModDir(mod.root, targetDir)
-  const modsTxtState = enableInModsTxt(`${config.ue4ssDir}/Mods/mods.txt`, mod.name)
-  const shared = linkSharedLibs(config.modsRepo, config.ue4ssDir)
-
-  return report(ctx, {
-    status: 'ok',
-    mode,
-    mod: mod.name,
-    target: targetDir,
-    link: linkMode,
-    mods_txt: modsTxtState,
-    shared_libs: shared.namespaces.length > 0 ? `${shared.namespaces.join(', ')} (${shared.mode})` : 'нет lib/',
-    hint:
-      linkMode === 'junction'
-        ? 'junction: правки в репозитории видны игре сразу, но UE4SS читает Lua при старте — перезапусти игру'
-        : 'создать junction не удалось, сделана копия: после каждой правки вызывай ww_deploy_mod заново',
-  })
+  const res = await bridge.call('load_mod', mod.entry, Math.max(config.bridgeTimeoutMs, 10000))
+  if (res.status === 'ok') {
+    const slot = loadSlot(readLoadOrder(config), mod.name)
+    return report(ctx, {
+      status: 'ok',
+      mod: mod.name,
+      entry: mod.entry,
+      result: res.body.trim().replace(/\s+/g, ' '),
+      elapsed_ms: res.elapsedMs,
+      ...(usesDirectHooks(mod)
+        ? {
+            warning:
+              'мод вызывает RegisterHook напрямую: мост не сможет снять эти хуки при следующей загрузке, и коллбэки начнут срабатывать по нескольку раз. Перейди на WWRegisterHook',
+          }
+        : {}),
+      ...(slot?.enabled
+        ? {
+            warning_double_load:
+              'мод дополнительно включён в mods.txt: вместе с копией моста после старта игры будут работать два экземпляра, хуки задвоятся. Убери строку из mods.txt или не перезапускай игру с этим модом',
+          }
+        : {}),
+      next: 'проверь работу через ww_game_log и ww_game_eval; повторный вызов перезагрузит мод',
+    })
+  }
+  if (res.status === 'error') {
+    return report(ctx, {
+      status: 'load_failed',
+      mod: mod.name,
+      entry: mod.entry,
+      error: res.body.trim().replace(/\s+/g, ' ').slice(0, 400),
+      hint: 'ошибка исполнения чанка мода; прогони ww_validate_mod и смотри ww_game_log',
+    })
+  }
+  return report(ctx, { mod: mod.name, ...bridgeFailureFields(res) })
 }

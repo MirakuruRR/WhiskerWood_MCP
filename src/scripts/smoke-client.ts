@@ -106,7 +106,7 @@ await call('ww_scaffold_mod', { mod_root: 'D:/Windows/hack', template: 'hook' })
 await call('ww_validate_mod', { mod_root: scaffoldRoot })
 await call('ww_validate_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier` })
 await call('ww_validate_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier`, live: true })
-await call('ww_deploy_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier`, mode: 'dev' })
+await call('ww_deploy_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier` })
 
 await call('ww_memory_wakeup', {})
 const added = await call('ww_memory_add', {

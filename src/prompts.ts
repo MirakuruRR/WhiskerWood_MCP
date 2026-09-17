@@ -27,7 +27,7 @@ const NEW_MOD = (goal: string, modName: string) => `Собери мод Whiskerw
    ww_generate_hook на каждую хукаемую функцию и правка Scripts/main.lua.
 8. ww_validate_mod — до нуля ошибок. Предупреждения либо чини, либо объясни, почему они
    допустимы именно здесь.
-9. ww_deploy_mod mode=dev при запущенной игре, затем ww_game_log и ww_game_eval —
+9. ww_deploy_mod при запущенной игре, затем ww_game_log и ww_game_eval —
    убедись, что мод не просто загрузился, а сработал. UI и визуал правь по ww_ui_tree:
    он показывает структуру и значения родных панелей, ручной обход виджетов запрещён.
 10. ww_memory_add (mod_name: ${modName}) — запиши то, что нельзя вывести из кода:
@@ -59,7 +59,7 @@ const FIX_AFTER_PATCH = (modsGlob: string) => `Игра обновилась. П
    не загружен, и это не поломка.
 5. Чини только то, что действительно сломалось: новый hook_path бери из ww_get_function,
    не переписывай логику мода заодно.
-6. После правок — ww_validate_mod и, если игра запущена, ww_deploy_mod mode=dev с
+6. После правок — ww_validate_mod и, если игра запущена, ww_deploy_mod с
    проверкой через ww_game_log.
 7. Память приведи в соответствие с новой версией: ww_memory_invalidate на записи,
    которые патч опроверг (в reason укажи версию), ww_memory_add на то, что сломалось

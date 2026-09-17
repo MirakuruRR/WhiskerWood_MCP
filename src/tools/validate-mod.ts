@@ -381,7 +381,7 @@ function collectForeign(ctx: GameContext, config: ServerConfig, resolve: ClassRe
 function orderNote(mine: LoadSlot | null, other: ForeignMod): string {
   if (!other.slot) return `${other.name} не значится в mods.txt — UE4SS его сейчас не грузит`
   if (!other.slot.enabled) return `${other.name} выключен в mods.txt`
-  if (!mine) return 'твоего мода в mods.txt ещё нет: порядок определится после ww_deploy_mod mode=release'
+  if (!mine) return 'твоего мода в mods.txt ещё нет: порядок определится после ручного добавления строки'
   if (!mine.enabled) return 'твой мод выключен в mods.txt'
   return mine.index < other.slot.index
     ? `ты грузишься раньше (mods.txt: ты #${mine.index}, ${other.name} #${other.slot.index})`
@@ -485,7 +485,7 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
         line: first?.line ?? 0,
         column: first?.column ?? 0,
         message:
-          'прямой RegisterHook: в dev-цикле (ww_deploy_mod mode=dev) хуки накопятся при каждой перезагрузке, а на холодном старте упадут на незагруженном классе. Ставь через require("ww.hook").for_mod(MOD, log)',
+          'прямой RegisterHook: в dev-цикле (ww_deploy_mod) хуки накопятся при каждой перезагрузке, а на холодном старте упадут на незагруженном классе. Ставь через require("ww.hook").for_mod(MOD, log)',
       })
     }
 
