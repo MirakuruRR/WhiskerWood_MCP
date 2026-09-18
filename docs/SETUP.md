@@ -20,11 +20,50 @@ Python нужен ровно для `wwpak.py`, который вынимает 
 
 ## 1. UE4SS
 
-Скачайте UE4SS 3.0.1 и распакуйте в `<игра>/Whiskerwood/Binaries/Win64` так, чтобы рядом с
-`Whiskerwood-Win64-Shipping.exe` оказался `dwmapi.dll`, а рядом — каталог `ue4ss/`.
+Нужна сборка [`experimental-latest`](https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest)
+— в стабильном 3.0.1 нет поддержки UE 5.6. Распакуйте в `<игра>/Whiskerwood/Binaries/Win64`
+так, чтобы рядом с `Whiskerwood-Win64-Shipping.exe` оказался `dwmapi.dll`, а рядом — каталог
+`ue4ss/`.
+
+### Сигнатура StaticConstructObject_Internal
+
+Без неё игра с UE4SS не запустится: резолвер падает на скане, `Fatal Error: PS scan timed
+out`. Это [баг](https://github.com/UE4SS-RE/RE-UE4SS/issues/1248) апстрима, ломающий все
+игры на UE 5.6; правки исходников UE4SS не требует — есть штатный обход через свой AOB.
+
+Создайте `ue4ss/UE4SS_Signatures/StaticConstructObject.lua`:
+
+```lua
+function Register()
+    return "4C 8B DC 55 53 41 56 49 8D AB ? ? ? ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 8B 41"
+end
+
+function OnMatchFound(MatchAddress)
+    return MatchAddress
+end
+```
+
+Маска переживает мелкие патчи игры. Если после крупного обновления скан снова начал
+падать — функция ищется детерминированным обходом по указателям (частотная эвристика не
+работает: вызовов «всего» порядка тысячи, в топ функция не попадает):
+
+1. UE хранит на класс статическую таблицу пар `{const char* Name, FNativeFuncPtr}` для
+   `StaticRegisterNatives`. Строка `SpawnObject` в exe ровно одна.
+2. Найти указатель на неё в `.rdata` — соседний qword есть `execSpawnObject`.
+3. `execSpawnObject` в хвосте зовёт функцию, вызываемую ровно один раз во всём бинарнике,
+   — это `UGameplayStatics::SpawnObject`.
+4. Её хвост — сборка `FStaticConstructObjectParameters` на стеке (`Outer` в `+0x38`,
+   `Name` в `+0x40`, флаги `0x1000000` в `+0x48`), сразу за ней искомый вызов.
+
+Проверки, что нашли именно её: все call-сайты предварены `lea rcx,[rsp+..]` (структура по
+ссылке), вызывающих функций сотни, в прологе читается `[rcx+0x70]`, форма пролога совпадает
+с официальной сигнатурой Drainsim из `zCustomGameConfigs` самого UE4SS, а маска с
+вайлдкардами даёт одно совпадение на весь файл.
 
 Запустите игру один раз и закройте. Должен появиться `ue4ss/UE4SS.log` — по нему
-определяется версия UE4SS, и без него часть проверок работать не будет.
+определяется версия UE4SS, и без него часть проверок работать не будет. В логе должна быть
+строка `StaticConstructObject_Internal address: 0x... <- Lua Script` и ни одного
+`Scan failed`.
 
 ## 2. Конфигурация
 
