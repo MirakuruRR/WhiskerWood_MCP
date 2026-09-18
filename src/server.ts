@@ -11,6 +11,8 @@ import { handleVerifyHook } from './tools/verify-hook'
 import { handleIndexStatus } from './tools/index-status'
 import { handleGameStatus } from './tools/game-status'
 import { handleGameProcess } from './tools/game-process'
+import { handleCaptureDumps } from './tools/capture-dumps'
+import { handleIndexRelease } from './tools/index-release'
 import { handleGameEval } from './tools/game-eval'
 import { handleUiTree } from './tools/ui-tree'
 import { handleTraceCalls } from './tools/trace-calls'
@@ -233,6 +235,18 @@ export function createServer(config: ServerConfig): McpServer {
   )
 
   server.registerTool(
+    'ww_index_release',
+    {
+      title: 'Освободить index.db',
+      description:
+        'Закрывает открытые сервером дескрипторы index.db всех профилей. Нужен только перед bun run setup --force, когда пересобирается уже загруженная версия: Windows не даёт подменить каталог профиля, пока файл в нём открыт. При обычной переиндексации на новую версию игры не нужен — новый профиль публикуется в свой каталог.',
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
+    wrapPlain(() => handleIndexRelease()),
+  )
+
+  server.registerTool(
     'ww_get_datatable',
     {
       title: 'DataTable игры',
@@ -338,6 +352,23 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
     wrapBridge((ctx, args) => handleGameProcess(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_capture_dumps',
+    {
+      title: 'Снять дампы рефлексии',
+      description:
+        'Снимает свежие дампы (.usmap, UE4SS_ObjectDump.txt, UHTHeaderDump) прямо из запущенной игры через мост — DumpUSMAP/DumpAllObjects/GenerateUHTCompatibleHeaders, без AutoDump и без перезапуска игры. Нужен загруженный мир (ww_game_process action=start save=... wait_for=world), иначе часть блюпринтовых UI-классов не попадёт в дамп — откажет с no_world, пока не разрешишь allow_main_menu. Перед фактическим снятием выдерживает settle_ms (по умолчанию 60000): миру нужно время догрузить объекты после входа в уровень. Дальше — bun run dumps:pull и bun run setup.',
+      inputSchema: {
+        settle_ms: z.number().int().min(0).max(180000).optional().describe('Пауза перед стартом дампа после входа в уровень, по умолчанию 60000'),
+        timeout_ms: z.number().int().positive().max(600000).optional().describe('Общий бюджет ожидания маркера ALL DONE, по умолчанию settle_ms + 120000'),
+        allow_main_menu: z.boolean().optional().describe('Снять дамп без загруженного мира (неполный — часть UI-классов не попадёт)'),
+        version: versionParam,
+      },
+      annotations: LIVE_WRITE,
+    },
+    wrapBridge((ctx, args) => handleCaptureDumps(ctx, config, args)),
   )
 
   server.registerTool(
