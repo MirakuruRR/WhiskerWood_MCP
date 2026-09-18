@@ -506,7 +506,7 @@ export function createServer(config: ServerConfig): McpServer {
       description:
         'Создаёт структуру Lua-мода UE4SS: mod.json, Scripts/main.lua из шаблона, подключение общей библиотеки lib/. Шаблоны: hook (перехват UFunction), ui (реакция на состояние с показом в UI), keybind (действие по клавише), diagnostic (разведка живой игры). mod_root обязан лежать внутри sandboxRoots, обычно <modsRepo>/mods/<имя>. Существующий код не перезаписывает.',
       inputSchema: {
-        mod_root: z.string().describe('Каталог мода, например D:/Whiskerwood_IO/WhiskerWood_Mods/mods/research-notifier'),
+        mod_root: z.string().describe('Каталог мода, например <репозиторий модов>/mods/research-notifier'),
         name: z.string().optional().describe('Имя мода; по умолчанию имя каталога. Станет именем папки в ue4ss/Mods'),
         template: z.enum(TEMPLATES).describe('Шаблон точки входа'),
         version: versionParam,

@@ -1,5 +1,5 @@
 import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
-import { ConfigError, loadConfig, validateConfig } from '../config'
+import { requireConfig } from '../utils/cli-config'
 
 const PAK_FILTER = '(AssetRegistry\.bin|Content/Data/|Config/Default)'
 
@@ -51,22 +51,7 @@ function unpackPak(repoRoot: string, pakPath: string, outDir: string): void {
 }
 
 async function main(): Promise<void> {
-  let cfg
-  try {
-    cfg = loadConfig()
-  } catch (e) {
-    if (e instanceof ConfigError) {
-      console.error(e.message)
-      process.exit(1)
-    }
-    throw e
-  }
-  const problems = validateConfig(cfg)
-  if (problems.length > 0) {
-    console.error('Конфигурация не прошла проверку:')
-    for (const p of problems) console.error(`  - ${p}`)
-    process.exit(1)
-  }
+  const cfg = requireConfig()
 
   const repoRoot = `${import.meta.dir}/../..`
   const srcObjectDump = `${cfg.ue4ssDir}/UE4SS_ObjectDump.txt`

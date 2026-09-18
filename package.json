@@ -1,15 +1,27 @@
 {
   "name": "whiskerwood-mcp",
   "version": "0.1.0",
-  "private": true,
+  "description": "MCP server for modding Whiskerwood (Unreal Engine 5.6) with UE4SS",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MirakuruRR/WhiskerWood_MCP.git"
+  },
+  "homepage": "https://github.com/MirakuruRR/WhiskerWood_MCP#readme",
   "type": "module",
+  "engines": {
+    "bun": ">=1.3.0"
+  },
   "scripts": {
     "setup": "bun run src/scripts/setup.ts",
+    "doctor": "bun run src/scripts/doctor.ts",
     "dumps:pull": "bun run src/scripts/pull-dumps.ts",
     "serve": "bun run src/stdio.ts",
     "bridge:deploy": "bun run src/scripts/deploy-bridge.ts",
-    "bridge:spikes": "bun run src/scripts/bridge-spikes.ts",
-    "smoke": "bun run src/scripts/smoke-client.ts"
+    "smoke": "bun run src/scripts/smoke-client.ts",
+    "memory:export": "bun run src/scripts/memory-export.ts",
+    "memory:sync": "bun run src/scripts/memory-sync.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

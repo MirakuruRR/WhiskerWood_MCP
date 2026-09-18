@@ -14,6 +14,8 @@ export function memoryResult(row: MemoryRow, opts: { fullBody?: boolean } = {}):
     status: row.status,
   }
   if (row.mod_name) fields.mod_name = row.mod_name
+  // общая база сообщества против проверенного на этом стенде — разного веса знание
+  if (row.origin === 'seed') fields.origin = 'seed'
   if (row.tags) fields.tags = row.tags
   fields.summary = oneLine(row.summary)
   fields.updated_at = row.updated_at

@@ -5,8 +5,18 @@ dist
 state
 *.log
 dumps
+.scratch
+
+# личная конфигурация: в репозитории лежит wwmcp.config.example.json
+wwmcp.config.json
+
+# данные игры не раздаём — всё генерируется локально
+*.usmap
+
 bridge/WWBridge/Scripts/config.lua
 
 # сайдкар .NET
 sidecar/**/bin
 sidecar/**/obj
+
+.claude/settings.local.json

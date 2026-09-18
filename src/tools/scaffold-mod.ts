@@ -5,6 +5,7 @@ import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText } from '../utils/ai-text'
 import { PathSandboxError } from '../utils/path-sandbox'
 import { MOD_ENTRY, MOD_MANIFEST, ModMeta, readModMeta, resolveModRoot } from '../utils/mod-project'
+import { sharedLibsRoot } from '../utils/ue4ss-deploy'
 
 export const TEMPLATES = ['hook', 'ui', 'keybind', 'diagnostic'] as const
 export type TemplateName = (typeof TEMPLATES)[number]
@@ -89,7 +90,7 @@ export function handleScaffoldMod(ctx: GameContext, config: ServerConfig, args: 
       mod_root: root,
       entry: entryPath,
       manifest: `${root}/${MOD_MANIFEST}`,
-      lib_path: `${config.modsRepo}/lib`,
+      lib_path: sharedLibsRoot(config.configDir, config.modsRepo) ?? 'не найдена — выполните bun run bridge:deploy',
       next: 'ww_find_symbol/ww_get_function → ww_verify_hook → ww_generate_hook → правка main.lua → ww_validate_mod → ww_deploy_mod',
     },
   })

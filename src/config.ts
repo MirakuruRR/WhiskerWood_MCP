@@ -21,14 +21,14 @@ export interface ServerConfig {
 }
 
 const TEMPLATE = `{
-  "gameDir":   "D:/Steam/steamapps/common/Whiskerwood",
+  "gameDir":   "C:/Program Files (x86)/Steam/steamapps/common/Whiskerwood",
   "exePath":   "{gameDir}/Whiskerwood/Binaries/Win64/Whiskerwood-Win64-Shipping.exe",
   "pakPath":   "{gameDir}/Whiskerwood/Content/Paks/Whiskerwood-Windows.pak",
   "ue4ssDir":  "{gameDir}/Whiskerwood/Binaries/Win64/ue4ss",
   "stateDir":  "./state",
   "distDir":   "./dist/games",
   "dumpsDir":  "./dumps",
-  "modsRepo":  "D:/Whiskerwood_IO/WhiskerWood_Mods",
+  "modsRepo":  "../WhiskerWood_Mods",
   "sandboxRoots": ["{modsRepo}", "{stateDir}", "{distDir}"],
   "extractRoot":  "{stateDir}/extracted",
   "saveDir":      "%LOCALAPPDATA%/Whiskerwood/Saved/saves_player",
@@ -151,11 +151,10 @@ export function validateConfig(cfg: ServerConfig): string[] {
   file('exePath', cfg.exePath)
   file('pakPath', cfg.pakPath)
   dir('ue4ssDir', cfg.ue4ssDir)
-  file('ue4ssDir/UE4SS.log', `${cfg.ue4ssDir}/UE4SS.log`)
-  dir('dumpsDir', cfg.dumpsDir)
-  dir('modsRepo', cfg.modsRepo)
 
-  for (const p of [cfg.stateDir, cfg.distDir, cfg.extractRoot]) {
+  // dumpsDir и modsRepo заводятся сами: на свежей установке дампов ещё нет,
+  // а репозиторий модов может быть и просто пустым каталогом
+  for (const p of [cfg.stateDir, cfg.distDir, cfg.extractRoot, cfg.dumpsDir, cfg.modsRepo]) {
     try {
       mkdirSync(p, { recursive: true })
     } catch {
@@ -176,4 +175,17 @@ export function validateConfig(cfg: ServerConfig): string[] {
   })
 
   return problems
+}
+
+// не ошибки конфига, а состояние стенда: лог появляется только после первого
+// запуска игры с UE4SS, и валить на этом setup новичку бессмысленно
+export function configWarnings(cfg: ServerConfig): string[] {
+  const warnings: string[] = []
+  if (!existsSync(`${cfg.ue4ssDir}/UE4SS.log`)) {
+    warnings.push(`нет ${cfg.ue4ssDir}/UE4SS.log — игра ещё ни разу не запускалась с UE4SS`)
+  }
+  if (!existsSync(`${cfg.ue4ssDir}/UE4SS.dll`) && !existsSync(`${cfg.ue4ssDir}/../dwmapi.dll`)) {
+    warnings.push(`в ${cfg.ue4ssDir} не видно UE4SS.dll, а рядом с exe — dwmapi.dll: UE4SS, похоже, не установлен`)
+  }
+  return warnings
 }

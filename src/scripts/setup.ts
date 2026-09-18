@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { ConfigError, loadConfig, validateConfig } from '../config'
 import { ProfileContract } from '../contract'
+import { ServerConfig } from '../config'
+import { requireConfig } from '../utils/cli-config'
+import { defaultSeedPath, syncSeed } from './memory-sync'
 import { INDEX_SCHEMA_VERSION } from '../schema'
 import { ensureFingerprint } from '../utils/game-fingerprint'
 import { ProfileBusyError, publishStagedProfile, stagingDirFor, sweepStagingAndTrash } from '../utils/profile-publish'
@@ -74,26 +76,29 @@ function detectUe4ssVersion(logPath: string): string {
   }
 }
 
+// общая база знаний не зависит от индекса: её применяем до сборки, чтобы она
+// досталась пользователю даже если дампы окажутся несвежими
+function seedMemory(cfg: ServerConfig): void {
+  if (!existsSync(defaultSeedPath())) return
+  try {
+    const res = syncSeed(cfg)
+    if (res.alreadyApplied) return
+    const parts = [`+${res.added.length} новых`, `~${res.updated.length} обновлено`]
+    if (res.conflicts.length > 0) parts.push(`!${res.conflicts.length} конфликтов (оставлено ваше)`)
+    console.log(`Общая база знаний: ${parts.join(', ')} из ${res.total}`)
+    if (res.conflicts.length > 0) console.log('  разобрать: bun run memory:sync')
+  } catch (e) {
+    console.warn(`Общая база знаний не применилась: ${(e as Error).message}`)
+  }
+}
+
 async function main(): Promise<void> {
   const force = process.argv.includes('--force')
   const allowStale = process.argv.includes('--allow-stale-dumps')
 
-  let cfg
-  try {
-    cfg = loadConfig()
-  } catch (e) {
-    if (e instanceof ConfigError) {
-      console.error(e.message)
-      process.exit(1)
-    }
-    throw e
-  }
-  const problems = validateConfig(cfg)
-  if (problems.length > 0) {
-    console.error('Конфигурация не прошла проверку:')
-    for (const p of problems) console.error(`  - ${p}`)
-    process.exit(1)
-  }
+  const cfg = requireConfig()
+
+  seedMemory(cfg)
 
   const objectDumpPath = `${cfg.dumpsDir}/UE4SS_ObjectDump.txt`
   const uhtDir = `${cfg.dumpsDir}/UHTHeaderDump`
