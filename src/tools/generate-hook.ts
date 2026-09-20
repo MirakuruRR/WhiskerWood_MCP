@@ -1,6 +1,6 @@
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText } from '../utils/ai-text'
-import { findObject, isHookable, renderSignature, suggestSimilar } from './common'
+import { findObject, isHookable, luaLocal, renderSignature, suggestSimilar } from './common'
 
 export interface GenerateHookArgs {
   function_path: string
@@ -19,11 +19,6 @@ interface ParamRow {
 }
 
 const TEXT_TYPES = new Set(['FName', 'FString', 'FText'])
-
-function luaLocal(name: string): string {
-  const safe = name.replace(/[^A-Za-z0-9_]/g, '_')
-  return /^[A-Za-z_]/.test(safe) ? safe : `p_${safe}`
-}
 
 function unwrap(p: ParamRow): string[] {
   const local = luaLocal(p.name)

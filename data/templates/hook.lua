@@ -16,4 +16,12 @@ local hook = require("ww.hook").for_mod(MOD, log)
 --   log.info("arg1 = " .. tostring(arg1:get()))
 -- end)
 
+-- Нужно поймать момент СОЗДАНИЯ объекта, а не вызов функции — это ww.watch,
+-- аналог ww.hook поверх NotifyOnNewObject (который сам по себе не переживает
+-- dev-перезагрузку):
+-- local watch = require("ww.watch").for_mod(MOD)
+-- watch.on("ShortClassName", function(obj)
+--   log.info("created: " .. obj:GetFullName())
+-- end)
+
 log.info("loaded")

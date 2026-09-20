@@ -1,4 +1,4 @@
-import { deflateRawSync } from 'node:zlib'
+import { deflateRawSync, inflateRawSync } from 'node:zlib'
 
 export interface ZipEntry {
   path: string
@@ -91,4 +91,53 @@ export function createZip(entries: ZipEntry[], mtime: Date = new Date()): Buffer
   eocd.writeUInt16LE(0, 20)
 
   return Buffer.concat([...locals, directory, eocd])
+}
+
+const EOCD_SIG = 0x06054b50
+const CENTRAL_SIG = 0x02014b50
+
+export class ZipReadError extends Error {}
+
+/** Достаточно для наших релизных архивов: store/deflate, без zip64, без шифрования. */
+export function extractZip(buf: Buffer): ZipEntry[] {
+  const minPos = Math.max(0, buf.length - 22 - 0xffff)
+  let eocdPos = -1
+  for (let i = buf.length - 22; i >= minPos; i--) {
+    if (buf.readUInt32LE(i) === EOCD_SIG) {
+      eocdPos = i
+      break
+    }
+  }
+  if (eocdPos < 0) throw new ZipReadError('не ZIP-архив: End Of Central Directory не найден')
+
+  const totalEntries = buf.readUInt16LE(eocdPos + 10)
+  let pos = buf.readUInt32LE(eocdPos + 16)
+
+  const entries: ZipEntry[] = []
+  for (let i = 0; i < totalEntries; i++) {
+    if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== CENTRAL_SIG) {
+      throw new ZipReadError(`битая центральная директория: запись ${i}`)
+    }
+    const method = buf.readUInt16LE(pos + 10)
+    const compressedSize = buf.readUInt32LE(pos + 20)
+    const uncompressedSize = buf.readUInt32LE(pos + 24)
+    const nameLen = buf.readUInt16LE(pos + 28)
+    const extraLen = buf.readUInt16LE(pos + 30)
+    const commentLen = buf.readUInt16LE(pos + 32)
+    const localOffset = buf.readUInt32LE(pos + 42)
+    const name = buf.toString('utf8', pos + 46, pos + 46 + nameLen).replace(/\\/g, '/')
+    pos += 46 + nameLen + extraLen + commentLen
+
+    if (name.endsWith('/')) continue // запись каталога — сами каталоги создаём по путям файлов
+    if (method !== 0 && method !== 8) throw new ZipReadError(`неподдержанный метод сжатия ${method} в ${name}`)
+
+    const localNameLen = buf.readUInt16LE(localOffset + 26)
+    const localExtraLen = buf.readUInt16LE(localOffset + 28)
+    const dataStart = localOffset + 30 + localNameLen + localExtraLen
+    const compressed = buf.subarray(dataStart, dataStart + compressedSize)
+    const data = method === 0 ? Buffer.from(compressed) : inflateRawSync(compressed)
+    if (data.length !== uncompressedSize) throw new ZipReadError(`размер после распаковки не совпадает: ${name}`)
+    entries.push({ path: name, data })
+  }
+  return entries
 }

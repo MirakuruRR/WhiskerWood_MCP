@@ -489,6 +489,19 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
       })
     }
 
+    if (analysis.usesDirectNotifyOnNewObject) {
+      const first = analysis.refs.find((r) => r.fn === 'NotifyOnNewObject')
+      findings.push({
+        severity: 'warn',
+        code: 'direct_notify_on_new_object',
+        file: rel,
+        line: first?.line ?? 0,
+        column: first?.column ?? 0,
+        message:
+          'прямой NotifyOnNewObject: подписку снять нечем, а Lua-функция глохнет после dev-перезагрузки (ww_deploy_mod) — диспетчер остаётся висеть, но звать уже некого. Ставь через require("ww.watch").for_mod(MOD).on(class, fn)',
+      })
+    }
+
     for (const ref of analysis.refs) {
       if (ref.arg === null) {
         dynamicPaths++

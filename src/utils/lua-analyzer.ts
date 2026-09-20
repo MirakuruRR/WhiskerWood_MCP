@@ -91,6 +91,7 @@ export interface Analysis {
   requires: string[]
   usesDirectRegisterHook: boolean
   usesWWRegisterHook: boolean
+  usesDirectNotifyOnNewObject: boolean
 }
 
 interface Ctx {
@@ -209,9 +210,13 @@ export const WW_OBJ_WRAPPERS: Record<string, string> = {
 /** lib/ww/hook.lua: отложенная регистрация, путь тот же аргумент, что у RegisterHook. */
 export const WW_HOOK_WRAPPERS: Record<string, string> = { on: 'RegisterHook' }
 
+/** lib/ww/watch.lua: подписка на класс тот же аргумент, что у NotifyOnNewObject. */
+export const WW_WATCH_WRAPPERS: Record<string, string> = { on: 'NotifyOnNewObject' }
+
 const MODULE_WRAPPERS: Record<string, Record<string, string>> = {
   'ww.obj': WW_OBJ_WRAPPERS,
   'ww.hook': WW_HOOK_WRAPPERS,
+  'ww.watch': WW_WATCH_WRAPPERS,
 }
 
 function requiredModule(node: any): string | null {
@@ -280,6 +285,7 @@ export function analyzeLua(source: string): Analysis {
       requires: [],
       usesDirectRegisterHook: false,
       usesWWRegisterHook: false,
+      usesDirectNotifyOnNewObject: false,
     }
   }
 
@@ -291,6 +297,7 @@ export function analyzeLua(source: string): Analysis {
   const requires: string[] = []
   let usesDirectRegisterHook = false
   let usesWWRegisterHook = false
+  let usesDirectNotifyOnNewObject = false
   const seenLints = new Set<string>()
 
   const lint = (code: string, severity: LintSeverity, node: any, message: string): void => {
@@ -438,6 +445,7 @@ export function analyzeLua(source: string): Analysis {
 
         if (!method && !viaWrapper && name === 'RegisterHook') usesDirectRegisterHook = true
         if (!method && !viaWrapper && name === 'WWRegisterHook') usesWWRegisterHook = true
+        if (!method && !viaWrapper && name === 'NotifyOnNewObject') usesDirectNotifyOnNewObject = true
 
         if (!method && name === 'print') {
           const first = args[0]
@@ -566,7 +574,7 @@ export function analyzeLua(source: string): Analysis {
     }
   }
 
-  return { comments, refs, lints, writes, requires, usesDirectRegisterHook, usesWWRegisterHook }
+  return { comments, refs, lints, writes, requires, usesDirectRegisterHook, usesWWRegisterHook, usesDirectNotifyOnNewObject }
 }
 
 export function isClassNameArgument(fn: string): boolean {

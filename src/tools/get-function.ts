@@ -1,6 +1,6 @@
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText } from '../utils/ai-text'
-import { findObject, suggestSimilar } from './common'
+import { findObject, formatEnumFields, resolveEnumInfo, suggestSimilar } from './common'
 
 export interface GetFunctionArgs {
   path: string
@@ -76,6 +76,11 @@ export function handleGetFunction(ctx: GameContext, args: GetFunctionArgs): stri
       param_count: argsOnly.length,
       returns: ret ? typeOf(ret) : 'void',
       ...(ret ? { returns_type_source: ret.type_source } : {}),
+      ...(ret
+        ? Object.fromEntries(
+            Object.entries(formatEnumFields(resolveEnumInfo(ctx, ret.prop_kind, ret.type_name))).map(([k, v]) => [`returns_${k}`, v]),
+          )
+        : {}),
       type_sources: sources.join(','),
     },
     results: argsOnly.map((p) => ({
@@ -85,6 +90,7 @@ export function handleGetFunction(ctx: GameContext, args: GetFunctionArgs): stri
         type: typeOf(p),
         type_source: p.type_source,
         is_out: p.is_out === 1,
+        ...formatEnumFields(resolveEnumInfo(ctx, p.prop_kind, p.type_name)),
       },
     })),
   })

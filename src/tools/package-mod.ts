@@ -33,7 +33,7 @@ function report(fields: Record<string, Scalar>): string {
   return renderAiText({ reportType: 'mod_package', fields })
 }
 
-function collectFiles(root: string): string[] {
+export function collectFiles(root: string): string[] {
   const out: string[] = []
   const walk = (dir: string, prefix: string, depth: number): void => {
     if (depth > 8) return

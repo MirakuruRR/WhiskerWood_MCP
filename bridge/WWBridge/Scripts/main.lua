@@ -17,6 +17,7 @@ if cfg.mods_repo then
 end
 
 local UEHelpers = require("UEHelpers")
+local dump = require("ww.dump")
 
 math.randomseed(os.time())
 local SESSION = string.format("%06x", math.random(0, 0xffffff))
@@ -104,38 +105,6 @@ local function sweepPending()
     end
 end
 
-local function describeUserdata(v)
-    local ok, s = pcall(function()
-        if v.IsValid and v:IsValid() then return v:GetFullName() end
-        return "<invalid>"
-    end)
-    return ok and tostring(s) or "<userdata>"
-end
-
-local function serialize(v, depth, out)
-    depth, out = depth or 0, out or {}
-    local pad = string.rep("  ", depth)
-    if depth > 4 then
-        out[#out + 1] = pad .. "<max_depth>"
-        return out
-    end
-    local t = type(v)
-    if t == "userdata" then
-        out[#out + 1] = pad .. describeUserdata(v)
-    elseif t == "table" then
-        local empty = true
-        for k, sub in pairs(v) do
-            empty = false
-            out[#out + 1] = pad .. tostring(k) .. ":"
-            serialize(sub, depth + 1, out)
-        end
-        if empty then out[#out + 1] = pad .. "<empty_table>" end
-    else
-        out[#out + 1] = pad .. tostring(v)
-    end
-    return out
-end
-
 local function parseRequest(text)
     local head, payload = text:match("^(.-)\n%-%-payload%-%-\n(.*)$")
     head = head or text
@@ -179,7 +148,7 @@ function OPS.eval(req, id)
         if packed.n <= 1 then return true, "<no_value>" end
         local out = {}
         for i = 2, packed.n do
-            for _, line in ipairs(serialize(packed[i])) do out[#out + 1] = line end
+            for _, line in ipairs(dump.serialize(packed[i])) do out[#out + 1] = line end
         end
         return true, table.concat(out, "\n")
     end)

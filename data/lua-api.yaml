@@ -104,11 +104,34 @@
   pitfalls: |
     Правильный способ поймать объект, которого ещё нет на момент загрузки скрипта,
     вместо FindFirstOf в теле мода.
-    Снять этот коллбэк нечем — он переживает перезагрузку мода в dev-цикле.
+    Снять этот коллбэк нечем — он переживает перезагрузку мода в dev-цикле, а Lua-функция,
+    на которую он был поставлен, глохнет после dofile (WWBridge обнуляет package.loaded).
+    Итог — диспетчер продолжает висеть, но звать уже некому: события просто теряются
+    после первой же dev-перезагрузки. Напрямую её не зовут — этим занимается ww.watch.
     Он же — штатная инвалидация кеша списка вместо повторного FindAllOf: коллбэк ставит
     флаг «список устарел», сам скан идёт уже по запросу (obj.all_of_cached в lib/ww).
     Коллбэк приходит вне игрового потока — внутри только флаг, без обращений к UObject.
     Состояние подписки держи в _G: она переживает dev-перезагрузку, а модуль — нет.
+
+- symbol: ww.watch
+  category: mod
+  signature: "require('ww.watch').for_mod(MOD) -> { on(class, fn) }"
+  summary: Подписка на создание объектов, переживающая dev-перезагрузку — обёртка над NotifyOnNewObject по образцу ww.hook.
+  status: ok
+  verified: stand
+  example: |
+    local watch = require("ww.watch").for_mod(MOD)
+    watch.on("/Script/SystemCore.UnlockResearchComponent", function(obj)
+      log.info("component spawned: " .. obj:GetFullName())
+    end)
+  pitfalls: |
+    Снять NotifyOnNewObject нечем, поэтому диспетчер на класс ставится один раз на всю
+    сессию и живёт в _G.__WW_WATCH_STATE; счётчик поколений мода отсекает коллбэки
+    прошлой dev-загрузки — раскиданные по .on() обработчики зовутся только если их
+    поколение совпадает с текущим for_mod(MOD).
+    Коллбэк fn получает объект уже созданным, вызов идёт в контексте движка — тяжёлую
+    работу лучше отложить через ExecuteInGameThread/ExecuteWithDelay, как и у RegisterHook.
+    ww_validate_mod предупреждает на прямой NotifyOnNewObject в теле мода.
 
 - symbol: RegisterInitGameStatePostHook
   category: hooks

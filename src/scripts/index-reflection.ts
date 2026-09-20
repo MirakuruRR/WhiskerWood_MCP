@@ -4,7 +4,7 @@ import { INDEX_SCHEMA_SQL, INDEX_SCHEMA_VERSION } from '../schema'
 import { ServerConfig } from '../config'
 import { lastSegment, normalizeDumpPath, outerOf, packageOf } from './parsers/path-forms'
 import { parseObjectDump } from './parsers/object-dump'
-import { parseUsmap, usmapTypeToString } from './parsers/usmap'
+import { parseUsmap, usmapTypeToString, USMAP_T } from './parsers/usmap'
 import { parseUhtModules, UhtFunction } from './parsers/uht'
 import { parseAssetRegistry } from './parsers/asset-registry'
 
@@ -447,15 +447,20 @@ export async function buildReflectionIndex(dbPath: string, cfg: ServerConfig, in
   meta.super_from_usmap = superFromUsmap
 
   let usmapFilledProps = 0
-  const fillFromUsmap = (ownerPath: string, arr: Array<{ name: string; typeName: string | null; innerType: string | null; source: string }>) => {
+  const fillFromUsmap = (
+    ownerPath: string,
+    arr: Array<{ propKind: string; name: string; typeName: string | null; innerType: string | null; source: string }>,
+  ) => {
     const pkg = packageOf(ownerPath)
     const ownerName = lastSegment(ownerPath)
     const schema = schemaByModuleAndName.get(`${pkg}:${ownerName}`) ?? schemaByModuleAndName.get(`:${ownerName}`)
     if (!schema) return
     for (const p of arr) {
-      if (p.typeName) continue
+      const isUnresolvedByte = p.propKind === 'ByteProperty' && p.typeName === 'byte'
+      if (p.typeName && !isUnresolvedByte) continue
       const sp = schema.props.find((x) => usmap.names[x.nameIdx] === p.name)
       if (!sp) continue
+      if (isUnresolvedByte && sp.type.t !== USMAP_T.Enum) continue
       const t = usmapTypeToString(sp.type, usmap.names)
       if (t && t !== 'unknown') {
         p.typeName = t

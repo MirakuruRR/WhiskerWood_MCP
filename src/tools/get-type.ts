@@ -1,6 +1,6 @@
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText, MAX_RESULTS } from '../utils/ai-text'
-import { findObject, pathFields, suggestSimilar } from './common'
+import { findObject, formatEnumFields, pathFields, resolveEnumInfo, suggestSimilar } from './common'
 
 export interface GetTypeArgs {
   path: string
@@ -118,6 +118,7 @@ export function handleGetType(ctx: GameContext, args: GetTypeArgs): string {
           offset: f.offset,
           type: typeOf(f),
           type_source: f.type_source,
+          ...formatEnumFields(resolveEnumInfo(ctx, f.prop_kind, f.type_name)),
         },
       })),
       ...methods.slice(0, MAX_METHODS).map((m) => ({

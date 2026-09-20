@@ -16,6 +16,7 @@ import { handleIndexRelease } from './tools/index-release'
 import { handleGameEval } from './tools/game-eval'
 import { handleUiTree } from './tools/ui-tree'
 import { handleTraceCalls } from './tools/trace-calls'
+import { handleCallFunction } from './tools/call-function'
 import { handleGameConsole } from './tools/game-console'
 import { handleGameLog } from './tools/game-log'
 import { handleCrashReport } from './tools/crash-report'
@@ -30,6 +31,7 @@ import { handleGenerateHook } from './tools/generate-hook'
 import { handleValidateMod } from './tools/validate-mod'
 import { handleDeployMod } from './tools/deploy-mod'
 import { handlePackageMod, PackageModArgs } from './tools/package-mod'
+import { handleInstallMod, InstallModArgs } from './tools/install-mod'
 import { handleDiffVersions } from './tools/diff-versions'
 import { handleMemoryWakeup } from './tools/memory-wakeup'
 import { handleMemorySearch } from './tools/memory-search'
@@ -392,14 +394,25 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Дерево виджетов',
       description:
-        'Дамп поддерева UMG живой игры: класс, видимость, текстура кисти, текст, тип слота и выравнивание слота именами по каждому виджету. Первый инструмент, когда надо понять устройство экрана, найти контейнер для своего виджета или увидеть, какую иконку и текст нарисовала игра: ищи в дампе tex= и text=. Без аргументов — дерево PlayHud. Ручной обход виджетов через ww_game_eval этим не заменяй.',
+        'Дамп поддерева UMG живой игры: класс, видимость, текстура кисти, текст, тип слота и выравнивание слота, а где смогли снять реальную геометрию — size=WxH и pos=X,Y (не всегда доступно вне живого Tick/Paint, тогда поле молча опускается). Шапка ответа показывает полное имя выбранного объекта и число кандидатов — так видно, тестовая карточка нашлась или игровая. Первый инструмент, когда надо понять устройство экрана, найти контейнер для своего виджета или увидеть, какую иконку и текст нарисовала игра: ищи в дампе tex= и text=. Без аргументов — дерево PlayHud. Ручной обход виджетов через ww_game_eval этим не заменяй.',
       inputSchema: {
-        root: z.string().optional().describe('Класс владельца для FindFirstOf, по умолчанию PlayHud'),
+        root: z.string().optional().describe('Класс владельца для FindAllOf, по умолчанию PlayHud'),
+        object_path: z
+          .string()
+          .optional()
+          .describe('Точный путь конкретного инстанса (GetFullName) вместо поиска по классу — снимает неоднозначность между тестовой и игровой карточкой'),
+        index: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Номер кандидата (с 1) среди найденных по root через FindAllOf, если их несколько'),
         field: z
           .string()
           .optional()
           .describe('Поле-виджет у владельца, с которого начать (например ImportantAgentModifiers)'),
         depth: z.number().int().positive().max(20).optional().describe('Глубина обхода, по умолчанию 6'),
+        match_name: z.string().optional().describe('Печатать только узлы, чьё имя содержит эту подстроку (без учёта регистра) — против заливки ответа глубоким деревом'),
         version: versionParam,
       },
       annotations: LIVE_READ,
@@ -410,21 +423,48 @@ export function createServer(config: ServerConfig): McpServer {
   server.registerTool(
     'ww_trace_calls',
     {
-      title: 'Счётчик вызовов UFunction',
+      title: 'Трейс вызовов UFunction',
       description:
-        'Вешает хуки на указанные функции, ждёт заданное окно и отдаёт число вызовов каждой. Нужен, чтобы понять, кто и как часто дёргает функцию, и вызывается ли она вообще: чисто нативные C++ -> C++ вызовы не ловятся и дадут ноль. Пути бери из hook_path в ответе ww_verify_hook.',
+        'Вешает хуки на указанные функции и считает вызовы; с capture_args пишет сэмплы всех аргументов по именам с t_ms от старта окна — этим различимо "до клика / после клика" между несколькими трейсимыми функциями. Нужен, чтобы понять, кто и как часто дёргает функцию, и вызывается ли она вообще: чисто нативные C++ -> C++ вызовы не ловятся и дадут ноль. Без action — одноразовый блокирующий режим (start+wait+stop), самый простой способ спросить "вызывается ли вообще". С action=start возвращает session_id сразу и не блокирует: читай счётчик через action=read (тот же session_id), сними хуки через action=stop. Захват аргументов на часто вызываемой функции может ронять FPS — трейс сам деградирует в чистый счётчик при частоте выше порога. Пути бери из hook_path в ответе ww_verify_hook.',
       inputSchema: {
-        paths: z.array(z.string()).min(1).max(10).describe('Пути функций в форме hook_path'),
-        seconds: z.number().int().positive().max(120).optional().describe('Окно наблюдения, по умолчанию 10'),
-        capture_args: z
-          .boolean()
+        paths: z
+          .array(z.string())
+          .max(10)
           .optional()
-          .describe('Дополнительно записать до 20 образцов: владелец вызова и первый аргумент'),
+          .describe('Пути функций в форме hook_path. Обязателен для action=start и одноразового режима, не нужен для read/stop'),
+        action: z
+          .enum(['start', 'read', 'stop'])
+          .optional()
+          .describe('Без значения — одноразовый режим (start+wait+stop). start — поставить хуки и вернуться сразу; read — прочитать текущий счётчик без остановки; stop — снять хуки и вернуть итог'),
+        session_id: z.string().optional().describe('session_id из ответа action=start; для read/stop защищает от чтения чужой сессии'),
+        seconds: z.number().int().positive().max(120).optional().describe('Окно наблюдения в одноразовом режиме, по умолчанию 10'),
+        capture_args: z.boolean().optional().describe('Писать сэмплы вызовов: все параметры по именам, t_ms, порядковый номер'),
+        max_samples: z.number().int().positive().max(200).optional().describe('Размер кольцевого буфера сэмплов, по умолчанию 50, максимум 200'),
         version: versionParam,
       },
       annotations: LIVE_WRITE,
     },
     wrapAsync((ctx, args) => handleTraceCalls(ctx, config, args)),
+  )
+
+  server.registerTool(
+    'ww_call',
+    {
+      title: 'Вызов UFunction на объекте',
+      description:
+        'Зовёт произвольную UFunction по индексному пути (как ww_get_function) на найденном объекте живой игры, с аргументами по именам параметров. Сигнатура и арность проверяются до вызова по индексу. Возвращает return-значение и out-параметры. Закрывает случаи вида "нажать кнопку dev-вью" или "уплатить налог программно" без сборки виджета руками — конкретные рецепты (что дёрнуть для какого окна) веди в памяти через ww_memory_add, а не жди их от инструмента. object принимает полный путь объекта (StaticFindObject) или короткое имя класса (первый через FindAllOf, object_index — если их несколько). Массивы, сеты, карты и делегаты как аргументы не поддержаны — для них ww_game_eval. Вызов произвольной UFunction в игровом потоке может уронить игру так же, как ww_game_eval: нативный access violation pcall не ловит. Один вызов за раз, не пачкой.',
+      inputSchema: {
+        object: z
+          .string()
+          .describe('Путь объекта (GetFullName/object_path) или короткое имя класса для FindAllOf'),
+        object_index: z.number().int().positive().optional().describe('Номер кандидата (с 1), если по object нашлось несколько'),
+        function_path: z.string().describe('Путь функции в любой форме индекса'),
+        args: z.record(z.string(), z.unknown()).optional().describe('Аргументы по именам параметров — из ww_get_function'),
+        version: versionParam,
+      },
+      annotations: LIVE_WRITE,
+    },
+    wrapAsync((ctx, args) => handleCallFunction(ctx, config, args)),
   )
 
   server.registerTool(
@@ -607,6 +647,24 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     wrapPlain((args: PackageModArgs) => handlePackageMod(config, args)),
+  )
+
+  server.registerTool(
+    'ww_install_mod',
+    {
+      title: 'Установить релиз в игру',
+      description:
+        'Ставит мод в <ue4ssDir>/Mods/<Имя> из каталога (mod_root, копия — как ww_package_mod собирал бы файлы) или из готового релизного zip (как отдаёт ww_package_mod: папка "<Имя мода>/..." внутри архива). Имя берётся из mod.json, если не задано явно. Перед перезаписью существующего каталога делает бэкап в state/backup/<Имя>-<таймштамп>; если каталог есть, но не похож на мод UE4SS (нет Scripts/main.lua), без force: true отказывается перетирать. Правит mods.txt идемпотентно (enable по умолчанию true). Единственное вместе с ww_extract_asset исключение из правила "сервер пишет только в песочницу" — пишет ещё и в каталог игры: <ue4ssDir>/Mods/<Имя> и mods.txt. Live-загрузка в уже запущенную игру без перезапуска — отдельный ww_deploy_mod.',
+      inputSchema: {
+        mod_root: z.string().optional().describe('Каталог мода для установки (взаимоисключимо с zip)'),
+        zip: z.string().optional().describe('Путь к релизному zip (взаимоисключимо с mod_root)'),
+        name: z.string().optional().describe('Имя установки; по умолчанию — name из mod.json / имя папки в архиве'),
+        enable: z.boolean().optional().describe('Включить в mods.txt, по умолчанию true'),
+        force: z.boolean().optional().describe('Перезаписать существующий каталог, даже если он не похож на мод UE4SS'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrapPlain((args: InstallModArgs) => handleInstallMod(config, args)),
   )
 
   server.registerTool(
