@@ -1,4 +1,4 @@
-export const INDEX_SCHEMA_VERSION = 3
+export const INDEX_SCHEMA_VERSION = 4
 
 export const INDEX_SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -143,6 +143,24 @@ CREATE VIRTUAL TABLE symbols_fts USING fts5(
 CREATE VIRTUAL TABLE loc_fts USING fts5(
   key, text, content='loc_entries', content_rowid='rowid'
 );
+
+CREATE TABLE calls (
+  caller_path   TEXT NOT NULL,
+  callee_name   TEXT NOT NULL,
+  callee_path   TEXT,
+  kind          TEXT NOT NULL,
+  count         INTEGER NOT NULL,
+  PRIMARY KEY (caller_path, callee_name, kind)
+);
+CREATE INDEX calls_callee_name_idx ON calls(callee_name COLLATE NOCASE);
+CREATE INDEX calls_callee_path_idx ON calls(callee_path);
+CREATE INDEX calls_caller_idx ON calls(caller_path);
+
+CREATE TABLE function_bytecode (
+  function_path TEXT PRIMARY KEY,
+  expr_count    INTEGER NOT NULL,
+  disasm        TEXT NOT NULL
+);
 `
 
 export interface ObjectRow {
@@ -198,6 +216,20 @@ export interface EnumValueRow {
   ordinal: number
   name: string
   value: number
+}
+
+export interface CallRow {
+  caller_path: string
+  callee_name: string
+  callee_path: string | null
+  kind: string
+  count: number
+}
+
+export interface FunctionBytecodeRow {
+  function_path: string
+  expr_count: number
+  disasm: string
 }
 
 export interface FtsSrcRow {

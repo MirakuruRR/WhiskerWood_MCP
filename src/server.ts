@@ -7,6 +7,8 @@ import { handleFindSymbol } from './tools/find-symbol'
 import { handleSearchMembers } from './tools/search-members'
 import { handleGetType } from './tools/get-type'
 import { handleGetFunction } from './tools/get-function'
+import { handleFindCallers } from './tools/find-callers'
+import { handleGetBytecode } from './tools/get-bytecode'
 import { handleVerifyHook } from './tools/verify-hook'
 import { handleIndexStatus } from './tools/index-status'
 import { handleGameStatus } from './tools/game-status'
@@ -201,6 +203,38 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: READ_ONLY,
     },
     wrap((ctx, args) => handleGetFunction(ctx, args)),
+  )
+
+  server.registerTool(
+    'ww_find_callers',
+    {
+      title: 'Кто вызывает функцию',
+      description:
+        'Обратный статический xref: кто вызывает функцию/класс из BP-байткода cooked-сборки (сайдкар WwParse: CUE4Parse разбирает ScriptBytecode). kind различает final/math/local_final (статический вызов, есть callee_path) от virtual/local_virtual (виртуальная диспетчеризация по имени, callee_path нет) и ref (класс/CDO/компонент ссылается на объект вне вызова функции — SuperStruct, ComponentTemplate и т.п.). Покрывает только тот prefix ассетов, что был просканирован при последней сборке индекса; C++-вызовы, невидимые в BP-байткоде, сюда не попадают.',
+      inputSchema: {
+        path: z.string().describe('Путь функции или класса в любой форме'),
+        kind: z.string().optional().describe('Фильтр по kind: final | math | local_final | virtual | local_virtual | ref'),
+        limit: z.number().int().positive().max(200).optional(),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrap((ctx, args) => handleFindCallers(ctx, args)),
+  )
+
+  server.registerTool(
+    'ww_get_bytecode',
+    {
+      title: 'Дизасм тела функции',
+      description:
+        'Линейный дизасм BP-байткода функции (EX_*-выражения с отступами по вложенности, разобрано сайдкаром WwParse из cooked-сборки). Полезно, когда ww_trace_calls показывает ноль срабатываний или неясен порядок вызовов внутри функции — в отличие от трейса, не требует запущенной игры. Для чисто нативных (C++) функций байткода нет — вернётся no_bytecode.',
+      inputSchema: {
+        function_path: z.string().describe('Путь функции в любой форме'),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrap((ctx, args) => handleGetBytecode(ctx, args)),
   )
 
   server.registerTool(

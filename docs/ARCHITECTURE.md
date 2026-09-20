@@ -12,13 +12,14 @@
 │  bun run setup                                                       │
 │    ├─ отпечаток игры (ProjectVersion из пака + sha256 exe)           │
 │    ├─ index-reflection : ObjectDump + UHT + usmap ──► SQLite         │
-│    ├─ index-gamedata   : сайдкар WwParse (CUE4Parse) ──► SQLite      │
+│    ├─ index-gamedata   : сайдкар WwParse data (CUE4Parse) ──► SQLite │
+│    ├─ index-xref       : сайдкар WwParse xref (CUE4Parse) ──► SQLite │
 │    ├─ приёмочные проверки                                            │
 │    └─ атомарная публикация dist/games/whiskerwood-<версия>/          │
 └──────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─ READ (миллисекунды, интерактивно) ──────────────────────────────────┐
-│  MCP stdio ──► 34 инструмента ──► index.db (readonly) + memory.db    │
+│  MCP stdio ──► 36 инструментов ──► index.db (readonly) + memory.db   │
 └──────────────────────────────────────────────────────────────────────┘
                               ↕ (живые инструменты)
 ┌─ МОСТ ───────────────────────────────────────────────────────────────┐
@@ -68,7 +69,7 @@ heartbeat, по которому `ww_game_status` отличает «игра з
 | `bridge/` | Lua-моды: `WWBridge` (канал) и `AutoDump` (снятие дампов) |
 | `data/lib/ww/` | рантайм-библиотека модов, линкуется в `ue4ss/Mods/shared` |
 | `data/templates/` | шаблоны `ww_scaffold_mod` |
-| `sidecar/WwParse/` | C#-сайдкар на CUE4Parse: читает таблицы данных по `.usmap` |
+| `sidecar/WwParse/` | C#-сайдкар на CUE4Parse: `data` — таблицы данных по `.usmap`, `xref` — статический xref (вызовы из `ScriptBytecode` + типизированные ссылки экспортов) |
 | `dumps/`, `dist/`, `state/` | не в гите: входы сборки, профили, рабочее состояние |
 
 ## Границы

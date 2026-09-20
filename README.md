@@ -6,7 +6,7 @@ Whiskerwood is an Unreal Engine 5.6 game modded through [UE4SS](https://github.c
 scripts. Writing those scripts by hand means guessing at reflection names, hook paths and
 engine quirks — and a wrong guess fails *silently*: the hook never fires, the mod loads
 fine, nothing happens. This server removes the guessing. It builds a local index of the
-game's reflection data, data tables and localisation, then exposes 34 tools that answer
+game's reflection data, data tables and localisation, then exposes 36 tools that answer
 "what is this class, what is the exact hook path, what does this key say in English" —
 plus a live bridge into the running game for evaluating Lua, dumping the UI tree, taking
 screenshots and reading crashes.
@@ -46,7 +46,7 @@ the manual route.
 
 ## What you get
 
-- **[34 tools](docs/TOOLS.md)** — reflection lookup, verified hook paths, data tables,
+- **[36 tools](docs/TOOLS.md)** — reflection lookup, verified hook paths, data tables,
   localisation, asset extraction, mod scaffolding and validation, hot deploy into the
   running game, crash reports, screenshots, UI tree dumps.
 - **A shared knowledge base** — 396 curated notes on what actually works in this game:

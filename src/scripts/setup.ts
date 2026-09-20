@@ -10,6 +10,7 @@ import { ProfileBusyError, publishStagedProfile, stagingDirFor, sweepStagingAndT
 import { profileIdFor } from '../contract'
 import { buildReflectionIndex } from './index-reflection'
 import { buildGameDataIndex } from './index-gamedata'
+import { buildXrefIndex } from './index-xref'
 
 interface InputFingerprint {
   size: number
@@ -213,6 +214,14 @@ async function main(): Promise<void> {
   })
   console.log(`  ${gamedata.meta.sidecar_log}`)
 
+  console.log('Статический xref (сайдкар WwParse: ScriptBytecode + типизированные ссылки)...')
+  const xref = await buildXrefIndex(`${staging}/index.db`, cfg, {
+    pakPath: cfg.pakPath,
+    usmapPath: usmap!.path,
+    jsonlPath: `${cfg.stateDir}/xref.jsonl`,
+  })
+  console.log(`  ${xref.meta.sidecar_log}`)
+
   console.log('Ключевые метрики:')
   const keys = [
     'objects_total',
@@ -233,6 +242,9 @@ async function main(): Promise<void> {
   for (const k of keys) console.log(`  ${k}: ${summary.meta[k]}`)
   for (const k of ['gamedata_tables', 'gamedata_data_assets', 'gamedata_rows', 'loc_tables', 'loc_entries', 'gamedata_failed_assets']) {
     console.log(`  ${k}: ${gamedata.meta[k]}`)
+  }
+  for (const k of ['xref_assets_scanned', 'xref_functions_scanned', 'xref_edges', 'xref_failed_assets']) {
+    console.log(`  ${k}: ${xref.meta[k]}`)
   }
 
   const abort = (code: number, phase: string): never => {
