@@ -542,12 +542,25 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Разбор краша игры',
       description:
-        'Разбор краша без ручного лазанья по %LOCALAPPDATA%: сам находит свежий дамп в Saved/Crashes, достаёт ErrorMessage и код исключения из CrashContext.runtime-xml, подшивает хвост UE4SS.log до момента краша (из текущего лога или архива state/logs) и список включённых модов. Символов в Shipping-дампе нет, поэтому связка «адрес + последняя активность модов в логе» — основной материал. Работает при выключенной игре. Без аргументов — последний краш; list: true — список крашей с датами; crash: подстрока имени каталога дампа.',
+        'Разбор краша без ручного лазанья по %LOCALAPPDATA%. По умолчанию читает отчёт WWCrashGuard (Saved/Crashes/wwguard/crash-*.txt): виновный мод, файл и строка Lua, стек Lua, последние вызовы, таймлайн ошибок, нативный стек — для Lua-модов этого обычно достаточно. confidence=certain — ответ готов; guess/none — сверить с details (jsonl) и затем engine: true. engine: true — движковый дамп UECC: ErrorMessage и код исключения из CrashContext.runtime-xml, хвост UE4SS.log до краша и включённые моды; он же автоматически, если отчётов WWCrashGuard нет. Работает при выключенной игре. Без аргументов — последний краш; list: true — список; crash: подстрока имени отчёта или каталога дампа.',
       inputSchema: {
-        crash: z.string().optional().describe('Подстрока имени каталога дампа (UECC-Windows-...); по умолчанию последний краш'),
+        crash: z
+          .string()
+          .optional()
+          .describe('Подстрока имени отчёта (crash-<id>-<время>.txt, достаточно id) или каталога UECC-Windows-... при engine; по умолчанию последний краш'),
         list: z.boolean().optional().describe('Список последних крашей вместо разбора'),
         limit: z.number().int().positive().max(100).optional().describe('Сколько крашей показать в list, по умолчанию 10'),
-        tail: z.number().int().positive().max(200).optional().describe('Сколько строк лога до краша подшить, по умолчанию 30'),
+        tail: z
+          .number()
+          .int()
+          .positive()
+          .max(200)
+          .optional()
+          .describe('Сколько последних строк оставить в Timeline отчёта WWCrashGuard или в хвосте лога при engine, по умолчанию 30'),
+        engine: z
+          .boolean()
+          .optional()
+          .describe('Разбирать движковый дамп UECC и UE4SS.log вместо отчёта WWCrashGuard — когда вердикт неуверенный'),
         version: versionParam,
       },
       annotations: LIVE_READ,

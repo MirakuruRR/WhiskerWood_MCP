@@ -151,3 +151,67 @@ export function crashLogTail(config: ServerConfig, crashAtMs: number, limit: num
   }
   return { source: '', entries: [] }
 }
+
+export interface GuardReport {
+  name: string
+  path: string
+  id: string
+  atMs: number
+  at: string
+}
+
+export interface GuardVerdict {
+  confidence: 'certain' | 'guess' | 'none'
+  suspect: string
+  header: Map<string, string>
+}
+
+export function guardDir(config: ServerConfig): string {
+  return `${crashesDir(config)}/wwguard`
+}
+
+export function listGuardReports(config: ServerConfig): GuardReport[] {
+  const dir = guardDir(config)
+  const out: GuardReport[] = []
+  for (const name of safeList(dir)) {
+    const m = /^crash-([0-9a-f]+)-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z\.txt$/.exec(name)
+    if (!m) continue
+    const path = `${dir}/${name}`
+    try {
+      if (statSync(path).size === 0) continue
+    } catch {
+      continue
+    }
+    const atMs = Date.parse(`${m[2]}-${m[3]}-${m[4]}T${m[5]}:${m[6]}:${m[7]}Z`)
+    out.push({ name, path, id: m[1], atMs, at: new Date(atMs).toISOString() })
+  }
+  return out.sort((a, b) => b.atMs - a.atMs)
+}
+
+export function parseGuardVerdict(text: string): GuardVerdict {
+  const header = new Map<string, string>()
+  for (const line of text.replace(/\r/g, '').split('\n')) {
+    if (line.startsWith('----')) break
+    const m = /^([A-Z][A-Za-z ]*?):\s+(.*)$/.exec(line)
+    if (m) header.set(m[1], m[2].trim())
+  }
+  const culprit = header.get('Culprit')
+  const likely = header.get('Likely')
+  if (culprit && !/^(unknown|none)\b/i.test(culprit)) return { confidence: 'certain', suspect: culprit, header }
+  if (likely) return { confidence: 'guess', suspect: likely, header }
+  return { confidence: 'none', suspect: culprit ?? '', header }
+}
+
+// Timeline бывает на сотни строк повторяющихся ошибок — оставляем хвост
+export function trimGuardTimeline(text: string, keep: number): string {
+  const lines = text.replace(/\r/g, '').split('\n')
+  const start = lines.findIndex((l) => l.startsWith('---- Timeline'))
+  if (start < 0) return lines.join('\n')
+  let end = lines.findIndex((l, i) => i > start && l.startsWith('----'))
+  if (end < 0) end = lines.length
+  while (end > start + 1 && lines[end - 1].trim() === '') end--
+  const body = lines.slice(start + 1, end)
+  if (body.length <= keep) return lines.join('\n')
+  const kept = [`  ... ${body.length - keep} earlier line(s) omitted`, ...body.slice(-keep)]
+  return [...lines.slice(0, start + 1), ...kept, ...lines.slice(end)].join('\n')
+}

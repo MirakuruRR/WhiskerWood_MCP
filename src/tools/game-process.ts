@@ -66,7 +66,7 @@ function exitFields(config: ServerConfig, state: ProcessState): Record<string, S
       f.last_log_error = err.text.split('\n')[0].slice(0, 200)
     }
     f.hint = dump
-      ? 'игра завершилась не по нашей команде и оставила крашдамп; разбор — ww_crash_report: дамп, хвост лога до краша и включённые моды в одном отчёте'
+      ? 'игра завершилась не по нашей команде и оставила крашдамп; разбор — ww_crash_report: отчёт WWCrashGuard с виновным модом и строкой Lua, при неясности — дамп UECC и хвост лога'
       : 'игра завершилась не по нашей команде: краш либо закрыта вручную'
   }
   return f
