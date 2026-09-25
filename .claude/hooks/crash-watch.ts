@@ -1,94 +1,103 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { loadConfig } from '../../src/config'
-import { listCrashes } from '../../src/utils/crash-report'
-import { findGameProcess, readState } from '../../src/utils/game-process'
+import { listCrashes, listGuardReports, parseGuardVerdict } from '../../src/utils/crash-report'
 
-interface Marker {
-  crashAtMs: number
-  ackExitLaunchedAt: number
+interface Crash {
+  name: string
+  atMs: number
+  at: string
+  detail: string
 }
 
-const ADVICE =
-  'Разбери падение через ww_crash_report (детали выхода — ww_game_process). ' +
-  'Не отчитывайся об успехе, пока краш не объяснён.'
+const ADVICE = 'Разбери падение через ww_crash_report. Не отчитывайся об успехе, пока краш не объяснён.'
+const SESSION_TTL_MS = 24 * 3600_000
 
 function oneLine(s: string, n: number): string {
   return s.replace(/\s+/g, ' ').trim().slice(0, n)
+}
+
+function readJson<T>(path: string): T | null {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as T
+  } catch {
+    return null
+  }
+}
+
+function writeJson(dir: string, path: string, value: unknown): void {
+  try {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path, JSON.stringify(value, null, 2))
+  } catch {}
 }
 
 async function main(): Promise<void> {
   const mode = process.argv[2] ?? 'post'
   if (!process.env.WWMCP_CONFIG) process.env.WWMCP_CONFIG = resolve(import.meta.dir, '../../wwmcp.config.json')
 
+  let input: { session_id?: string; stop_hook_active?: boolean } = {}
+  try {
+    input = JSON.parse(await Bun.stdin.text()) ?? {}
+  } catch {}
+  const sessionId = (input.session_id ?? '').replace(/[^\w-]/g, '')
+  if (!sessionId) return
+
   const config = loadConfig()
-  const markerPath = `${config.stateDir}/crash-watch.json`
+  const dir = `${config.stateDir}/crash-watch`
+  const handledPath = `${dir}/handled.json`
+  const sessionPath = `${dir}/session-${sessionId}.json`
 
-  const readMarker = (): Marker | null => {
-    try {
-      return JSON.parse(readFileSync(markerPath, 'utf8')) as Marker
-    } catch {
-      return null
+  const newestCrash = (): Crash | null => {
+    const engine = listCrashes(config)[0]
+    const guard = listGuardReports(config)[0]
+    if (guard && (!engine || guard.atMs >= engine.atMs)) {
+      let suspect = ''
+      try {
+        suspect = parseGuardVerdict(readFileSync(guard.path, 'utf8')).suspect
+      } catch {}
+      return { name: guard.name, atMs: guard.atMs, at: guard.at, detail: suspect }
     }
+    return engine ? { name: engine.name, atMs: engine.atMs, at: engine.at, detail: engine.errorMessage } : null
   }
-  const writeMarker = (m: Marker): void => {
+
+  if (mode === 'arm') {
+    if (readJson(sessionPath)) return
+    writeJson(dir, sessionPath, { armedAt: Date.now() })
     try {
-      mkdirSync(config.stateDir, { recursive: true })
-      writeFileSync(markerPath, JSON.stringify(m, null, 2))
+      for (const f of readdirSync(dir)) {
+        if (!f.startsWith('session-')) continue
+        const p = `${dir}/${f}`
+        if (Date.now() - statSync(p).mtimeMs > SESSION_TTL_MS) rmSync(p, { force: true })
+      }
     } catch {}
-  }
-
-  const state = readState(config)
-  const newest = listCrashes(config)[0] ?? null
-  const launchedAt = state.launchedAt ?? 0
-  const exitPending = launchedAt > 0 && (state.stopRequestedAt ?? 0) < launchedAt
-  const marker = readMarker()
-
-  if (!marker) {
-    const gone = exitPending && findGameProcess(config) === null
-    writeMarker({ crashAtMs: newest?.atMs ?? 0, ackExitLaunchedAt: gone ? launchedAt : 0 })
     return
   }
 
-  const freshCrash = newest !== null && newest.atMs > marker.crashAtMs
-  const gameGone =
-    exitPending && marker.ackExitLaunchedAt !== launchedAt && findGameProcess(config) === null
+  const handledAt = readJson<{ crashAtMs: number }>(handledPath)?.crashAtMs ?? 0
+  const newest = newestCrash()
 
   if (mode === 'ack') {
-    writeMarker({
-      crashAtMs: newest?.atMs ?? marker.crashAtMs,
-      ackExitLaunchedAt: gameGone ? launchedAt : marker.ackExitLaunchedAt,
-    })
+    if (newest && newest.atMs > handledAt) writeJson(dir, handledPath, { crashAtMs: newest.atMs })
     return
   }
 
-  const lines: string[] = []
-  if (freshCrash && newest) {
-    const err = newest.errorMessage ? ` — ${oneLine(newest.errorMessage, 200)}` : ''
-    lines.push(`КРАШ ИГРЫ: ${newest.name}, ${newest.at}${err}`)
-  }
-  if (gameGone) {
-    lines.push(
-      `ПРОЦЕСС ИГРЫ ИСЧЕЗ не по команде MCP (запуск ${new Date(launchedAt).toISOString()}); крашдамп может дописываться ещё несколько секунд`,
-    )
-  }
-  if (lines.length === 0) return
+  const armedAt = readJson<{ armedAt: number }>(sessionPath)?.armedAt
+  if (armedAt === undefined || !newest || newest.atMs <= Math.max(armedAt, handledAt)) return
 
-  const text = `${lines.join('\n')}\n${ADVICE}`
+  const detail = newest.detail ? ` — ${oneLine(newest.detail, 200)}` : ''
+  const line = `КРАШ ИГРЫ: ${newest.name}, ${newest.at}${detail}`
+  const text = `${line}\n${ADVICE}`
 
   if (mode === 'stop') {
-    let stopActive = false
-    try {
-      stopActive = JSON.parse(await Bun.stdin.text())?.stop_hook_active === true
-    } catch {}
-    if (stopActive) return
+    if (input.stop_hook_active === true) return
     console.log(JSON.stringify({ decision: 'block', reason: text }))
     return
   }
 
   console.log(
     JSON.stringify({
-      systemMessage: lines[0],
+      systemMessage: line,
       hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text },
     }),
   )
