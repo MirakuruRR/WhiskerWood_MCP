@@ -21,7 +21,7 @@ export async function handleGameStatus(ctx: GameContext | null, config: ServerCo
   } else if (!bridge.isAlive(st)) {
     fields.status = 'game_not_running'
     Object.assign(fields, statusFields(st))
-    fields.hint = 'heartbeat моста устарел: игра закрыта или подвисла'
+    fields.hint = 'heartbeat моста устарел: игра закрыта, подвисла или грузит уровень'
   } else {
     fields.status = 'running'
     Object.assign(fields, statusFields(st))

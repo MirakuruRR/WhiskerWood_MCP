@@ -10,6 +10,7 @@ local STATUS = cfg.root .. "/bridge.status"
 local QUEUE, QUEUE_WORK = IN .. "/queue", IN .. "/queue.work"
 local POLL_MS = cfg.poll_ms or 120
 local WORLD_REFRESH_TICKS = math.max(1, math.floor(5000 / POLL_MS))
+local WORLD_SETTLE_TICKS = math.max(1, math.ceil(1000 / POLL_MS))
 local DEFAULT_TIMEOUT_MS = 5000
 
 if cfg.mods_repo then
@@ -24,6 +25,8 @@ local SESSION = string.format("%06x", math.random(0, 0xffffff))
 local STARTED = os.time()
 local tick, busy = 0, ""
 local world, lastError = "", ""
+local worldRefreshAt = 0
+local inGameThread = false
 local hookRegistry = {}
 local pending = {}
 
@@ -60,9 +63,19 @@ local function writeResult(id, ok, body, elapsedMs, exec)
     if busy == id then busy = "" end
 end
 
--- Спайк 2 закрыт отрицательно: ExecuteInGameThread на этой сборке ставит коллбэк в
--- очередь, а не исполняет на месте. Поэтому ответ формируется коллбэком, а не сразу
--- после диспатча: опрос продолжает тикать, результат забирается следующим тиком.
+local function runInto(rec, fn)
+    local called, ok, body = pcall(fn)
+    if called then
+        rec.ok, rec.body = ok, body
+    else
+        rec.ok, rec.body = false, "game_thread_error: " .. tostring(ok)
+    end
+    rec.done = true
+end
+
+-- Опрос в игровом потоке исполняет операцию на месте. В запасном async-режиме
+-- ExecuteInGameThread ставит коллбэк в очередь (спайк 2), и результат забирается
+-- следующим тиком опроса.
 local function dispatchGameThread(id, timeoutMs, fn)
     local rec = {
         t0 = os.clock(),
@@ -70,20 +83,18 @@ local function dispatchGameThread(id, timeoutMs, fn)
         done = false,
     }
     pending[id] = rec
+    if inGameThread then
+        runInto(rec, fn)
+        rec.exec = "game_thread_sync"
+        return rec
+    end
     local dispatched = pcall(ExecuteInGameThread, function()
         if rec.done or rec.abandoned then return end
-        local called, ok, body = pcall(fn)
-        if called then
-            rec.ok, rec.body = ok, body
-        else
-            rec.ok, rec.body = false, "game_thread_error: " .. tostring(ok)
-        end
-        rec.done = true
+        runInto(rec, fn)
     end)
     if not dispatched then
-        local called, ok, body = pcall(fn)
-        rec.ok, rec.body = called and ok or false, called and body or tostring(ok)
-        rec.done, rec.exec = true, "direct"
+        runInto(rec, fn)
+        rec.exec = "direct"
         return rec
     end
     rec.exec = rec.done and "game_thread_sync" or "game_thread_async"
@@ -117,11 +128,17 @@ local function timeoutOf(req)
     return tonumber(req.timeout_ms) or DEFAULT_TIMEOUT_MS
 end
 
+local function readWorld()
+    local w = UEHelpers.GetWorld()
+    world = (w and w:IsValid()) and w:GetFullName() or ""
+end
+
 local function refreshWorld()
-    pcall(ExecuteInGameThread, function()
-        local w = UEHelpers.GetWorld()
-        world = (w and w:IsValid()) and w:GetFullName() or ""
-    end)
+    if inGameThread then
+        pcall(readWorld)
+    else
+        pcall(ExecuteInGameThread, readWorld)
+    end
 end
 
 local OPS = {}
@@ -260,7 +277,10 @@ local function handleOne(id)
     local req = parseRequest(f:read("a"))
     f:close()
 
+    -- В игровом потоке heartbeat стоит, пока идёт операция; busy=id в статусе
+    -- говорит серверу, что игра жива и занята именно этим запросом.
     busy = id
+    writeStatus()
     local handler = OPS[req.op or ""]
     if not handler then
         writeResult(id, false, "unknown_op: " .. tostring(req.op), 0, "")
@@ -280,7 +300,7 @@ end
 
 local function pollOnce()
     tick = tick + 1
-    if tick % WORLD_REFRESH_TICKS == 1 then refreshWorld() end
+    if tick % WORLD_REFRESH_TICKS == 1 or tick == worldRefreshAt then refreshWorld() end
     sweepPending()
     writeStatus()
 
@@ -305,13 +325,36 @@ local function pollOnce()
     end
 end
 
-local function poll()
+local function pollSafe()
     local ok, err = pcall(pollOnce)
     if not ok then
         setError(err)
         log("poll error: " .. lastError)
     end
-    ExecuteWithDelay(POLL_MS, poll)
+end
+
+local function pollAsync()
+    pollSafe()
+    ExecuteWithDelay(POLL_MS, pollAsync)
+end
+
+-- ExecuteWithDelay исполняет Lua в async-потоке на том же состоянии, куда load_mod
+-- грузит dev-моды, без блокировки: гонка за кучу и GC, AV в ltable.c. Поэтому
+-- опрос в игровом потоке, а async — только запасной путь для сборок без API.
+local function startPoll()
+    local reason = "нет LoopInGameThreadWithDelay"
+    if type(LoopInGameThreadWithDelay) == "function" then
+        inGameThread = true
+        local ok, h = pcall(LoopInGameThreadWithDelay, POLL_MS, pollSafe)
+        if ok and h ~= nil then
+            log(string.format("poll: игровой поток, LoopInGameThreadWithDelay handle=%s", tostring(h)))
+            return
+        end
+        inGameThread = false
+        reason = "LoopInGameThreadWithDelay: " .. (ok and "не вернул handle" or tostring(h))
+    end
+    log("poll: откат на ExecuteWithDelay (async) — " .. reason)
+    ExecuteWithDelay(500, pollAsync)
 end
 
 -- Файлы прошлой сессии исполнять нельзя: они относятся к другому запуску игры
@@ -320,8 +363,8 @@ os.remove(QUEUE)
 os.remove(QUEUE_WORK)
 writeStatus()
 
-RegisterInitGameStatePostHook(function() ExecuteWithDelay(1000, refreshWorld) end)
-RegisterLoadMapPostHook(function() ExecuteWithDelay(1000, refreshWorld) end)
+RegisterInitGameStatePostHook(function() worldRefreshAt = tick + WORLD_SETTLE_TICKS end)
+RegisterLoadMapPostHook(function() worldRefreshAt = tick + WORLD_SETTLE_TICKS end)
 
 log(string.format("started session=%s root=%s poll=%dms", SESSION, cfg.root, POLL_MS))
-ExecuteWithDelay(500, poll)
+startPoll()
