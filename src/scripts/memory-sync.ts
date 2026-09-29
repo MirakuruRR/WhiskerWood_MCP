@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { repoRoot, requireConfig } from '../utils/cli-config'
 import { ServerConfig } from '../config'
 import { MemoryRow, closeMemoryDb, memoryContentHash, nowIso, openMemoryDb } from '../utils/memory-db'
-import { parseSeed } from './memory-export'
+import { buildSanitizer, parseSeed, toSeedRecord } from './memory-export'
 
 export interface Outcome {
   seedPath: string
@@ -50,6 +50,7 @@ export function syncSeed(cfg: ServerConfig, opts: SyncOptions = {}): Outcome {
   const now = nowIso()
   const res: Outcome = { ...base, alreadyApplied: false, added: [], updated: [], unchanged: 0, conflicts: [], collisions: [] }
 
+  const clean = buildSanitizer(cfg)
   const findRow = db.query('SELECT * FROM project_memories WHERE public_id = ?')
   const insert = db.query(
     `INSERT INTO project_memories
@@ -97,23 +98,26 @@ export function syncSeed(cfg: ServerConfig, opts: SyncOptions = {}): Outcome {
       // запись, совпадающая с общей базой дословно, — это она и есть, а не коллизия id:
       // так база автора, из которой сид и собран, принимается без единого конфликта
       if (local.origin !== 'seed') {
-        if (localHash !== hash) {
+        if (localHash === hash) {
+          if (!dryRun) db.run("UPDATE project_memories SET origin = 'seed', seed_hash = ? WHERE public_id = ?", [hash, rec.public_id])
+          res.unchanged++
+          continue
+        }
+        // своя запись, в которой экспорт заменил личные пути плейсхолдерами, — тоже она
+        if (memoryContentHash(toSeedRecord(local, clean) as unknown as Record<string, unknown>) !== hash) {
           res.collisions.push(rec.public_id)
           continue
         }
-        if (!dryRun) db.run("UPDATE project_memories SET origin = 'seed', seed_hash = ? WHERE public_id = ?", [hash, rec.public_id])
-        res.unchanged++
-        continue
-      }
-      if (local.seed_hash === hash) {
-        res.unchanged++
-        continue
-      }
-
-      const touchedLocally = localHash !== local.seed_hash
-      if (touchedLocally && !preferSeed) {
-        res.conflicts.push({ public_id: rec.public_id, summary: local.summary })
-        continue
+      } else {
+        if (local.seed_hash === hash) {
+          res.unchanged++
+          continue
+        }
+        const touchedLocally = localHash !== local.seed_hash
+        if (touchedLocally && !preferSeed) {
+          res.conflicts.push({ public_id: rec.public_id, summary: local.summary })
+          continue
+        }
       }
 
       if (!dryRun) {
