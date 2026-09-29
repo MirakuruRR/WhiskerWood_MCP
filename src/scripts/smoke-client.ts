@@ -110,9 +110,9 @@ await call('ww_deploy_mod', { mod_root: `${cfg.modsRepo}/mods/research-notifier`
 
 await call('ww_memory_wakeup', {})
 const added = await call('ww_memory_add', {
-  mod_name: 'smoke-probe',
   entries: [
     {
+      mod_name: 'smoke-probe',
       category: 'pitfall',
       summary: 'Utf8String на UE 5.6 не работает: кириллица уходит в мусор',
       body: 'Проверено на стенде 0.6.190.0. Текст брать через ww_resolve_loc, в Lua передавать готовую строку.',
@@ -120,6 +120,7 @@ const added = await call('ww_memory_add', {
       importance: 5,
     },
     {
+      mod_name: 'smoke-probe',
       category: 'decision',
       summary: 'Хук вешаем на GetResearchInfo, а не на startResearch',
       body: 'startResearch есть в строках бинарника, но отсутствует в рефлексии.',
@@ -128,8 +129,7 @@ const added = await call('ww_memory_add', {
   ],
 })
 await call('ww_memory_add', {
-  mod_name: 'smoke-probe',
-  entries: [{ category: 'pitfall', summary: 'Utf8String на UE 5.6 не работает: кириллица уходит в мусор', body: 'Повтор — должен обновить, а не задвоить.', tags: ['Utf8String'] }],
+  entries: [{ mod_name: 'smoke-probe', category: 'pitfall', summary: 'Utf8String на UE 5.6 не работает: кириллица уходит в мусор', body: 'Повтор — должен обновить, а не задвоить.', tags: ['Utf8String'] }],
 })
 await call('ww_memory_search', { query: 'Utf8String' })
 await call('ww_memory_search', { query: 'research', mod_name: 'smoke-probe' })

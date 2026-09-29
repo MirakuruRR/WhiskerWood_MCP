@@ -107,7 +107,9 @@ function main(): void {
   const all = db.query(`SELECT * FROM project_memories ${where} ORDER BY public_id`).all() as MemoryRow[]
 
   const excluded = readExcludeList(`${repoRoot()}/data/memory-seed.exclude.txt`)
-  const rows = all.filter((r) => !excluded.has(r.public_id))
+  // знание про конкретный мод остаётся у его автора, в общую базу идёт только общее
+  const modBound = all.filter((r) => !excluded.has(r.public_id) && r.mod_name)
+  const rows = all.filter((r) => !excluded.has(r.public_id) && !r.mod_name)
   const clean = buildSanitizer(cfg)
   const seeds = rows.map((r) => toSeedRecord(r, clean))
   const sanitized = seeds.filter((s, i) => JSON.stringify(s) !== JSON.stringify(toSeedRecord(rows[i])))
@@ -139,6 +141,7 @@ function main(): void {
   console.log(`${out}`)
   console.log(`  записей: ${rows.length} (активных ${active}, погашенных ${rows.length - active})`)
   console.log(`  по категориям: ${[...byCategory].map(([k, v]) => `${k} ${v}`).join(', ')}`)
+  if (modBound.length > 0) console.log(`  привязаны к модам, остаются у вас: ${modBound.length}`)
   if (excluded.size > 0) {
     const skipped = all.filter((r) => excluded.has(r.public_id))
     console.log(`  исключено по списку: ${skipped.length}`)

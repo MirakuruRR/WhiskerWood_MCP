@@ -113,6 +113,11 @@ export function syncSeed(cfg: ServerConfig, opts: SyncOptions = {}): Outcome {
           res.unchanged++
           continue
         }
+        if (localHash === hash) {
+          if (!dryRun) db.run('UPDATE project_memories SET seed_hash = ? WHERE public_id = ?', [hash, rec.public_id])
+          res.unchanged++
+          continue
+        }
         const touchedLocally = localHash !== local.seed_hash
         if (touchedLocally && !preferSeed) {
           res.conflicts.push({ public_id: rec.public_id, summary: local.summary })

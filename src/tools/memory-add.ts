@@ -13,7 +13,6 @@ export interface MemoryEntry {
 
 export interface MemoryAddArgs {
   entries: MemoryEntry[]
-  mod_name?: string
 }
 
 export function handleMemoryAdd(config: ServerConfig, args: MemoryAddArgs): string {
@@ -42,7 +41,7 @@ export function handleMemoryAdd(config: ServerConfig, args: MemoryAddArgs): stri
       const summary = oneLine(e.summary)
       const body = (e.body ?? '').trim()
       const tags = normalizeTags(e.tags)
-      const modName = e.mod_name ?? args.mod_name ?? null
+      const modName = e.mod_name?.trim() || null
       const existing = findExisting.get(e.category, summary, modName) as
         | { id: number; public_id: string; body: string; tags: string; importance: number }
         | null

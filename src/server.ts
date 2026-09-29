@@ -772,7 +772,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Проектная память: записать',
       description:
-        'Батч-запись в проектную память по итогам работы: принятые решения (decision), обнаруженные грабли (pitfall), предпочтения владельца (preference), незакрытые хвосты (todo), факты (note). Записывай то, что нельзя вывести из кода и индекса: почему сделано так, а не иначе, и что было проверено вживую. Запись с category=pitfall и тегами-символами попадает в линт ww_validate_mod. Повтор той же summary в той же категории обновляет запись, а не плодит дубль.',
+        'Батч-запись в проектную память по итогам работы: принятые решения (decision), обнаруженные грабли (pitfall), предпочтения владельца (preference), незакрытые хвосты (todo), факты (note). Записывай то, что нельзя вывести из кода и индекса: почему сделано так, а не иначе, и что было проверено вживую. Запись с category=pitfall и тегами-символами попадает в линт ww_validate_mod. Повтор той же summary в той же категории обновляет запись, а не плодит дубль. mod_name решается для каждой записи отдельно: знание об игре, UE4SS или инструментах — без mod_name, даже если добыто во время работы над модом; только такие записи уходят в общую базу.',
       inputSchema: {
         entries: z
           .array(
@@ -784,13 +784,17 @@ export function createServer(config: ServerConfig): McpServer {
                 .array(z.string())
                 .optional()
                 .describe('Символы и темы. Для pitfall тег-идентификатор (Utf8String, ForEachUObject) становится триггером линта'),
-              mod_name: z.string().optional().describe('К какому моду относится; без него запись общая для всех модов'),
+              mod_name: z
+                .string()
+                .optional()
+                .describe(
+                  'Только если запись про сам мод и без него бессмысленна: его код, решения, баги, планы. Устройство игры, поведение UE4SS, грабли инструментов — без mod_name, иначе знание останется запертым в моде',
+                ),
               importance: z.number().int().min(1).max(5).optional().describe('1..5, по умолчанию 3'),
             }),
           )
           .min(1)
           .max(20),
-        mod_name: z.string().optional().describe('Мод по умолчанию для всех записей батча'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
