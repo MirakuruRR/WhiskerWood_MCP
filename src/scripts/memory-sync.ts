@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { repoRoot, requireConfig } from '../utils/cli-config'
 import { ServerConfig } from '../config'
 import { MemoryRow, closeMemoryDb, memoryContentHash, nowIso, openMemoryDb } from '../utils/memory-db'
-import { SEED_FIELDS, SeedRecord } from './memory-export'
+import { parseSeed } from './memory-export'
 
 export interface Outcome {
   seedPath: string
@@ -26,27 +26,6 @@ export interface SyncOptions {
 
 export function defaultSeedPath(): string {
   return `${repoRoot()}/data/memory-seed.jsonl`
-}
-
-function parseSeed(path: string): SeedRecord[] {
-  const out: SeedRecord[] = []
-  const text = readFileSync(path, 'utf8')
-  const lines = text.split(/\r?\n/)
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim()
-    if (line.length === 0) continue
-    let rec: SeedRecord
-    try {
-      rec = JSON.parse(line) as SeedRecord
-    } catch (e) {
-      throw new Error(`${path}:${i + 1} — не разбирается как JSON: ${(e as Error).message}`)
-    }
-    for (const f of SEED_FIELDS) {
-      if (!(f in rec)) throw new Error(`${path}:${i + 1} — нет поля "${f}"`)
-    }
-    out.push(rec)
-  }
-  return out
 }
 
 export function syncSeed(cfg: ServerConfig, opts: SyncOptions = {}): Outcome {

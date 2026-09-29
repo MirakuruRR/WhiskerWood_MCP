@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { ServerConfig } from '../config'
 import { repoRoot, requireConfig } from '../utils/cli-config'
-import { MemoryRow, closeMemoryDb, openMemoryDb } from '../utils/memory-db'
+import { MemoryRow, closeMemoryDb, memoryContentHash, openMemoryDb } from '../utils/memory-db'
 
 export const SEED_FIELDS = [
   'public_id',
@@ -63,6 +63,26 @@ export function toSeedRecord(row: MemoryRow, clean: (t: string) => string = (t) 
   return out as unknown as SeedRecord
 }
 
+export function parseSeed(path: string): SeedRecord[] {
+  const out: SeedRecord[] = []
+  const lines = readFileSync(path, 'utf8').split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (line.length === 0) continue
+    let rec: SeedRecord
+    try {
+      rec = JSON.parse(line) as SeedRecord
+    } catch (e) {
+      throw new Error(`${path}:${i + 1} — не разбирается как JSON: ${(e as Error).message}`)
+    }
+    for (const f of SEED_FIELDS) {
+      if (!(f in rec)) throw new Error(`${path}:${i + 1} — нет поля "${f}"`)
+    }
+    out.push(rec)
+  }
+  return out
+}
+
 export function readExcludeList(path: string): Map<string, string> {
   const out = new Map<string, string>()
   if (!existsSync(path)) return out
@@ -92,8 +112,24 @@ function main(): void {
   const seeds = rows.map((r) => toSeedRecord(r, clean))
   const sanitized = seeds.filter((s, i) => JSON.stringify(s) !== JSON.stringify(toSeedRecord(rows[i])))
 
+  // свои записи вливаются в сид, а не заменяют его: иначе пулл-реквест снёс бы общую базу
+  const merged = new Map<string, SeedRecord>()
+  const taken: string[] = []
+  let already = 0
+  if (localOnly && existsSync(out)) {
+    for (const rec of parseSeed(out)) merged.set(rec.public_id, rec)
+  }
+  const upstream = merged.size
+  for (const s of seeds) {
+    const prev = merged.get(s.public_id)
+    if (!prev) merged.set(s.public_id, s)
+    else if (memoryContentHash(prev as unknown as Record<string, unknown>) === memoryContentHash(s as unknown as Record<string, unknown>)) already++
+    else taken.push(s.public_id)
+  }
+  const lines = [...merged.values()].sort((a, b) => (a.public_id < b.public_id ? -1 : 1)).map((s) => JSON.stringify(s))
+
   mkdirSync(dirname(out), { recursive: true })
-  writeFileSync(out, seeds.length > 0 ? `${seeds.map((s) => JSON.stringify(s)).join('\n')}\n` : '', 'utf8')
+  writeFileSync(out, lines.length > 0 ? `${lines.join('\n')}\n` : '', 'utf8')
   closeMemoryDb()
 
   const byCategory = new Map<string, number>()
@@ -112,7 +148,15 @@ function main(): void {
     console.log(`  личные пути заменены плейсхолдерами в ${sanitized.length} записях:`)
     for (const s of sanitized) console.log(`    ${s.public_id}`)
   }
-  if (localOnly) console.log('  только свои записи — этот файл можно приложить к пулл-реквесту')
+  if (localOnly) {
+    console.log(`  влито в общую базу: +${merged.size - upstream} (было ${upstream}, стало ${merged.size})`)
+    if (already > 0) console.log(`  уже есть в общей базе дословно: ${already}`)
+    if (taken.length > 0) {
+      console.log(`  ${taken.length} записей не влито — id занят другой записью общей базы:`)
+      for (const id of taken) console.log(`    ${id}`)
+    }
+    console.log('  файл готов к пулл-реквесту: git diff покажет только ваши строки')
+  }
 }
 
 if (import.meta.main) main()
