@@ -31,6 +31,23 @@ export function modsTxtPath(config: ServerConfig): string {
   return `${config.ue4ssDir}/Mods/mods.txt`
 }
 
+/** Имя .usmap содержит версию движка, после апгрейда рядом лежит и старый — берём свежий. */
+export function newestUsmap(ue4ssDir: string): { name: string; mtimeMs: number } | null {
+  let files: string[]
+  try {
+    files = readdirSync(ue4ssDir)
+  } catch {
+    return null
+  }
+  let best: { name: string; mtimeMs: number } | null = null
+  for (const name of files) {
+    if (!name.endsWith('.usmap')) continue
+    const mtimeMs = statSync(`${ue4ssDir}/${name}`).mtimeMs
+    if (!best || mtimeMs > best.mtimeMs) best = { name, mtimeMs }
+  }
+  return best
+}
+
 /** Порядок загрузки UE4SS = порядок строк в mods.txt; отсутствие строки означает, что мод не грузится. */
 export function readLoadOrder(config: ServerConfig): Map<string, LoadSlot> {
   const out = new Map<string, LoadSlot>()

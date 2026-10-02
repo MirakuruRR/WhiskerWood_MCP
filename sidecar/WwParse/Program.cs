@@ -39,6 +39,14 @@ internal static class Program
         return 2;
     }
 
+    private static EGame? EngineOf(string usmap)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(Path.GetFileName(usmap), @"-(\d+)\.(\d+)\.\d+-\d+\+");
+        if (m.Success && Enum.TryParse<EGame>($"GAME_UE{m.Groups[1].Value}_{m.Groups[2].Value}", out var game)) return game;
+        Console.Error.WriteLine($"версия движка не определяется по имени .usmap (ждём <Game>-5.8.3-0+...): {usmap}");
+        return null;
+    }
+
     private static int RunData(string[] rawArgs)
     {
         string? paks = null, usmap = null, output = null, prefix = "Whiskerwood/Content/Data/";
@@ -63,8 +71,9 @@ internal static class Program
         }
         if (!Directory.Exists(paks)) { Console.Error.WriteLine($"каталог паков не найден: {paks}"); return 2; }
         if (!File.Exists(usmap)) { Console.Error.WriteLine($".usmap не найден: {usmap}"); return 2; }
+        if (EngineOf(usmap) is not { } game) return 2;
 
-        using var provider = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(EGame.GAME_UE5_6), StringComparer.OrdinalIgnoreCase);
+        using var provider = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(game), StringComparer.OrdinalIgnoreCase);
         provider.MappingsContainer = new FileUsmapTypeMappingsProvider(usmap, StringComparer.OrdinalIgnoreCase);
         provider.Initialize();
         provider.Mount();
@@ -167,8 +176,9 @@ internal static class Program
         }
         if (!Directory.Exists(paks)) { Console.Error.WriteLine($"каталог паков не найден: {paks}"); return 2; }
         if (!File.Exists(usmap)) { Console.Error.WriteLine($".usmap не найден: {usmap}"); return 2; }
+        if (EngineOf(usmap) is not { } game) return 2;
 
-        using var provider = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(EGame.GAME_UE5_6), StringComparer.OrdinalIgnoreCase);
+        using var provider = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(game), StringComparer.OrdinalIgnoreCase);
         provider.MappingsContainer = new FileUsmapTypeMappingsProvider(usmap, StringComparer.OrdinalIgnoreCase);
         // Бытовое имя гейта в CUE4Parse: без него UStruct.ScriptBytecode всегда пуст, даже для
         // экспортов с полноценным телом функции — грабля, съевшая полдня на разведке этого пункта.

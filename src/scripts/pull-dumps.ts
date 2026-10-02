@@ -1,5 +1,6 @@
 import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { requireConfig } from '../utils/cli-config'
+import { newestUsmap } from '../utils/ue4ss-mods'
 
 const PAK_FILTER = '(AssetRegistry\.bin|Content/Data/|Config/Default)'
 
@@ -57,7 +58,7 @@ async function main(): Promise<void> {
   const srcObjectDump = `${cfg.ue4ssDir}/UE4SS_ObjectDump.txt`
   const srcUht = `${cfg.ue4ssDir}/UHTHeaderDump`
   const srcLog = `${cfg.ue4ssDir}/UE4SS.log`
-  const usmapName = readdirSync(cfg.ue4ssDir).find((f) => f.endsWith('.usmap'))
+  const usmapName = newestUsmap(cfg.ue4ssDir)?.name
 
   const missing: string[] = []
   if (!existsSync(srcObjectDump)) missing.push(srcObjectDump)

@@ -1,6 +1,6 @@
 # Whiskerwood MCP
 
-MCP-сервер для создания Lua-модов к Whiskerwood (Unreal Engine 5.6) и их внедрения в игру
+MCP-сервер для создания Lua-модов к Whiskerwood (Unreal Engine 5.8) и их внедрения в игру
 через [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS).
 
 Он даёт ИИ-ассистенту всё, чтобы писать рабочие моды, а не угадывать: локальный индекс

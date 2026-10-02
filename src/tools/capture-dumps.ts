@@ -1,10 +1,11 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { ServerConfig } from '../config'
 import { GameContext } from '../utils/game-context'
 import { getBridge } from '../utils/bridge-client'
 import { findGameProcess, lastCrashDump } from '../utils/game-process'
 import { renderAiText, Scalar } from '../utils/ai-text'
 import { echoFields, isLevelLoaded, statusFields } from './bridge-common'
+import { newestUsmap } from '../utils/ue4ss-mods'
 
 export interface CaptureDumpsArgs {
   settle_ms?: number
@@ -43,18 +44,6 @@ function captureChunk(capturedAt: string, settleMs: number): string {
     'end)',
     'return "scheduled"',
   ].join('\n')
-}
-
-function usmapMtime(ue4ssDir: string): { name: string; mtimeMs: number } | null {
-  let files: string[]
-  try {
-    files = readdirSync(ue4ssDir)
-  } catch {
-    return null
-  }
-  const name = files.find((f) => f.endsWith('.usmap'))
-  if (!name) return null
-  return { name, mtimeMs: statSync(`${ue4ssDir}/${name}`).mtimeMs }
 }
 
 function objectDumpMtime(ue4ssDir: string): number {
@@ -102,7 +91,7 @@ export async function handleCaptureDumps(
   } catch {
     /* лога ещё нет — прочитаем с начала */
   }
-  const usmapBefore = usmapMtime(config.ue4ssDir)
+  const usmapBefore = newestUsmap(config.ue4ssDir)
   const objectDumpBefore = objectDumpMtime(config.ue4ssDir)
 
   const t0 = Date.now()
@@ -152,7 +141,7 @@ export async function handleCaptureDumps(
   }
 
   fields.marker_captured_at = markerAt
-  const usmapAfter = usmapMtime(config.ue4ssDir)
+  const usmapAfter = newestUsmap(config.ue4ssDir)
   const objectDumpAfter = objectDumpMtime(config.ue4ssDir)
   const usmapUpdated = !!usmapAfter && (!usmapBefore || usmapAfter.mtimeMs > usmapBefore.mtimeMs)
   const objectDumpUpdated = objectDumpAfter > objectDumpBefore

@@ -1,6 +1,6 @@
 # Whiskerwood MCP
 
-An MCP server for writing Lua mods for Whiskerwood (Unreal Engine 5.6) and injecting them
+An MCP server for writing Lua mods for Whiskerwood (Unreal Engine 5.8) and injecting them
 into the game through [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS).
 
 It gives an AI assistant what it needs to write working mods instead of guessing: a local

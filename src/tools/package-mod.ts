@@ -17,9 +17,13 @@ const README_RU = ['УСТАНОВКА.txt']
 const README_EN = ['INSTALL.txt', 'README.txt', 'readme.txt']
 const UE4SS_RELEASE = 'https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest'
 const WIN64 = '<Steam>\\steamapps\\common\\Whiskerwood\\Whiskerwood\\Binaries\\Win64\\'
+const SIGNATURE_SINCE = '0.7.208.0'
+const SIGNATURE_AOB =
+  '48 89 5C 24 10 48 89 6C 24 18 56 57 41 54 41 56 41 57 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 84 24 ? ? ? ? 48 8B 29 33 DB 4C 8B 79 08'
+const AOB_IN_TEXT_RE = /(return\s+")(?:[0-9A-F]{2}|\?{1,2})(?: (?:[0-9A-F]{2}|\?{1,2}))+(")/g
 const SIGNATURE = [
   '   function Register()',
-  '       return "4C 8B DC 55 53 41 56 49 8D AB ? ? ? ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 8B 41"',
+  `       return "${SIGNATURE_AOB}"`,
   '   end',
   '',
   '   function OnMatchFound(MatchAddress)',
@@ -114,19 +118,24 @@ function installNoteRu(mod: ModProject, version: string): string {
     `- Whiskerwood ${mod.meta?.game_version ?? 'см. страницу мода'}`,
     '- UE4SS, установленный в игру (как — ниже)',
     '',
-    'Шаг 1. UE4SS (пропусти, если уже стоит)',
-    '---------------------------------------',
+    'Шаг 1. UE4SS',
+    '------------',
+    'Если UE4SS уже стоит — пункты 1-2 пропусти, но пункт 3 проверь: начиная',
+    `с Whiskerwood ${SIGNATURE_SINCE} (движок UE 5.8) старая сигнатура не подходит.`,
+    '',
     '1. Скачай сборку "experimental-latest" (обычный zip, не -dev):',
     `   ${UE4SS_RELEASE}`,
-    '   Стабильный 3.0.1 НЕ подойдёт — в нём нет поддержки UE 5.6.',
+    '   Стабильный 3.0.1 НЕ подойдёт — в нём нет поддержки UE 5.6 и новее.',
     '2. Распакуй так, чтобы файл dwmapi.dll и папка ue4ss\\ легли прямо в',
     `   ${WIN64}`,
-    '3. Создай файл ue4ss\\UE4SS_Signatures\\StaticConstructObject.lua с текстом:',
+    '3. Создай (или перезапиши) файл ue4ss\\UE4SS_Signatures\\StaticConstructObject.lua',
+    '   с текстом:',
     '',
     ...SIGNATURE,
     '',
-    '   Без этого файла игра не запустится: UE4SS не найдёт',
-    '   StaticConstructObject_Internal и упадёт на скане сигнатур.',
+    '   Без этого файла или со старым текстом UE4SS не найдёт',
+    '   StaticConstructObject_Internal: игра зависнет в главном меню, а в',
+    `   ue4ss\\UE4SS.log пойдут строки "Was unable to find AOB for 'StaticConstructObject'".`,
     '4. Запусти игру и убедись, что она стартует.',
     '',
     'Шаг 2. Мод',
@@ -164,19 +173,24 @@ function installNoteEn(mod: ModProject, version: string): string {
     `- Whiskerwood ${mod.meta?.game_version ?? 'see the mod page'}`,
     '- UE4SS installed into the game (see below)',
     '',
-    'Step 1. UE4SS (skip if already installed)',
-    '-----------------------------------------',
+    'Step 1. UE4SS',
+    '-------------',
+    'If UE4SS is already installed, skip items 1-2 but do check item 3: starting',
+    `with Whiskerwood ${SIGNATURE_SINCE} (UE 5.8) the old signature no longer works.`,
+    '',
     '1. Download the "experimental-latest" build (the plain zip, not the -dev one):',
     `   ${UE4SS_RELEASE}`,
-    '   The stable 3.0.1 release will NOT work — it has no UE 5.6 support.',
+    '   The stable 3.0.1 release will NOT work — it has no UE 5.6+ support.',
     '2. Unpack it so that dwmapi.dll and the ue4ss\\ folder end up directly in',
     `   ${WIN64}`,
-    '3. Create the file ue4ss\\UE4SS_Signatures\\StaticConstructObject.lua containing:',
+    '3. Create (or overwrite) the file ue4ss\\UE4SS_Signatures\\StaticConstructObject.lua',
+    '   with this text:',
     '',
     ...SIGNATURE,
     '',
-    '   Without this file the game will not start: UE4SS fails to find',
-    '   StaticConstructObject_Internal and dies during the signature scan.',
+    '   Without this file, or with the old text, UE4SS cannot find',
+    '   StaticConstructObject_Internal: the game hangs in the main menu and',
+    `   ue4ss\\UE4SS.log fills with "Was unable to find AOB for 'StaticConstructObject'".`,
     '4. Launch the game and make sure it starts.',
     '',
     'Step 2. The mod',
@@ -201,6 +215,12 @@ function installNoteEn(mod: ModProject, version: string): string {
     '',
   )
   return lines.join('\r\n')
+}
+
+// Свой readme мода несёт копию сигнатуры, и после патча движка она молча устаревает
+function refreshSignature(text: string): { text: string; refreshed: boolean } {
+  const next = text.replace(AOB_IN_TEXT_RE, `$1${SIGNATURE_AOB}$2`)
+  return { text: next, refreshed: next !== text }
 }
 
 function pickArchiveName(distDir: string, base: string): { file: string; bumped: boolean } {
@@ -310,11 +330,13 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     data: Buffer.from(`${JSON.stringify(shipped, null, 2)}\n`, 'utf8'),
   })
   for (const e of vendored.entries) entries.push({ path: `${mod.name}/${e.path}`, data: e.data })
+  const ru = refreshSignature(readmeRu)
+  const en = refreshSignature(readmeEn)
   // BOM: файл открывают блокнотом, без него кириллица читается как cp1251
   const withBom = (text: string): Buffer =>
     Buffer.from(text.startsWith('﻿') ? text : `﻿${text}`, 'utf8')
-  entries.push({ path: 'УСТАНОВКА.txt', data: withBom(readmeRu || installNoteRu(mod, version)) })
-  entries.push({ path: 'INSTALL.txt', data: withBom(readmeEn || installNoteEn(mod, version)) })
+  entries.push({ path: 'УСТАНОВКА.txt', data: withBom(ru.text || installNoteRu(mod, version)) })
+  entries.push({ path: 'INSTALL.txt', data: withBom(en.text || installNoteEn(mod, version)) })
 
   const distDir = `${config.modsRepo}/dist`
   mkdirSync(distDir, { recursive: true })
@@ -338,14 +360,17 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     files: entries.length,
     root_folder: `${mod.name}/`,
     vendored_libs: vendored.modules.length > 0 ? vendored.modules.join(', ') : 'нет',
-    readme_ru: readmeRu ? 'взят из мода' : 'сгенерирован',
-    readme_en: readmeEn ? 'взят из мода' : 'сгенерирован',
+    readme_ru: !readmeRu ? 'сгенерирован' : ru.refreshed ? 'взят из мода, сигнатура в архиве заменена на текущую' : 'взят из мода',
+    readme_en: !readmeEn ? 'сгенерирован' : en.refreshed ? 'взят из мода, сигнатура в архиве заменена на текущую' : 'взят из мода',
     manifest: manifestState,
     ...(picked.bumped
       ? {
           name_collision: `${mod.name}-${version}.zip уже лежит в dist, архив назван ${picked.file}`,
           hint: 'подними mod_version, если это действительно новый релиз',
         }
+      : {}),
+    ...(ru.refreshed || en.refreshed
+      ? { readme_hint: 'в readme мода устаревшая сигнатура StaticConstructObject — обнови и исходный файл, а не только архив' }
       : {}),
     ...(bridgeOnlyHooks
       ? {
