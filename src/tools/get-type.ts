@@ -1,5 +1,7 @@
+import { ServerConfig } from '../config'
 import { GameContext, versionEchoFields } from '../utils/game-context'
-import { renderAiText, MAX_RESULTS } from '../utils/ai-text'
+import { renderAiText } from '../utils/ai-text'
+import { bpClass, bpField, bpFunction, bpUnavailableHint } from '../utils/loom-types'
 import { findObject, formatEnumFields, pathFields, resolveEnumInfo, suggestSimilar } from './common'
 
 export interface GetTypeArgs {
@@ -11,7 +13,7 @@ const MAX_METHODS = 80
 const MAX_SUBCLASSES = 50
 const MAX_ENUM_VALUES = 200
 
-export function handleGetType(ctx: GameContext, args: GetTypeArgs): string {
+export function handleGetType(ctx: GameContext, config: ServerConfig, args: GetTypeArgs): string {
   const obj = findObject(ctx, args.path)
   if (!obj) {
     const suggestions = suggestSimilar(ctx, args.path)
@@ -39,6 +41,9 @@ export function handleGetType(ctx: GameContext, args: GetTypeArgs): string {
     })
   }
 
+  const info = bpClass(ctx, config, obj.path)
+  const hint = info ? null : bpUnavailableHint(config)
+
   const base: Record<string, string | number | boolean> = {
     ...versionEchoFields(ctx),
     status: 'found',
@@ -48,6 +53,16 @@ export function handleGetType(ctx: GameContext, args: GetTypeArgs): string {
     is_blueprint: obj.is_blueprint === 1,
     ...(obj.super_path ? { super_path: obj.super_path } : {}),
     ...(obj.hook_path || obj.object_path ? pathFields(obj.hook_path, obj.object_path) : { hook_path_status: obj.hook_path_status }),
+    ...(info
+      ? {
+          bp: info.in_types ? 'in_types' : 'not_in_types',
+          ...(info.loom_path ? { loom_path: info.loom_path } : {}),
+          ...(info.loads_at_build ? { bp_loads_at_build: true } : {}),
+          ...(info.note ? { bp_note: info.note } : {}),
+        }
+      : hint
+        ? { bp_hint: hint }
+        : {}),
   }
 
   if (obj.kind === 'Enum') {
@@ -111,19 +126,26 @@ export function handleGetType(ctx: GameContext, args: GetTypeArgs): string {
       subclass_count: subclasses.length > MAX_SUBCLASSES ? MAX_SUBCLASSES : subclasses.length,
     },
     results: [
-      ...fields.slice(0, MAX_FIELDS).map((f) => ({
-        fields: {
-          section: 'field',
-          name: f.name,
-          offset: f.offset,
-          type: typeOf(f),
-          type_source: f.type_source,
-          ...formatEnumFields(resolveEnumInfo(ctx, f.prop_kind, f.type_name)),
-        },
-      })),
-      ...methods.slice(0, MAX_METHODS).map((m) => ({
-        fields: { section: 'method', name: m.name },
-      })),
+      ...fields.slice(0, MAX_FIELDS).map((f) => {
+        const bf = bpField(ctx, config, obj.path, f.name)
+        return {
+          fields: {
+            section: 'field',
+            name: f.name,
+            offset: f.offset,
+            type: typeOf(f),
+            type_source: f.type_source,
+            ...(bf ? { bp: bf.status } : {}),
+            ...formatEnumFields(resolveEnumInfo(ctx, f.prop_kind, f.type_name)),
+          },
+        }
+      }),
+      ...methods.slice(0, MAX_METHODS).map((m) => {
+        const bm = bpFunction(ctx, config, obj.path, m.name)
+        return {
+          fields: { section: 'method', name: m.name, ...(bm ? { bp: bm.status } : {}) },
+        }
+      }),
       ...subclasses.slice(0, MAX_SUBCLASSES).map((s) => ({
         fields: { section: 'subclass', name: s.path, kind: s.kind },
       })),

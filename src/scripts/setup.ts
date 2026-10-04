@@ -1,16 +1,18 @@
 import { createHash } from 'node:crypto'
+import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { ProfileContract } from '../contract'
 import { ServerConfig } from '../config'
 import { requireConfig } from '../utils/cli-config'
 import { defaultSeedPath, syncSeed } from './memory-sync'
-import { INDEX_SCHEMA_VERSION } from '../schema'
+import { INDEX_SCHEMA_VERSION, LIFT_SCHEMA_SQL } from '../schema'
 import { ensureFingerprint } from '../utils/game-fingerprint'
 import { ProfileBusyError, publishStagedProfile, stagingDirFor, sweepStagingAndTrash } from '../utils/profile-publish'
 import { profileIdFor } from '../contract'
 import { buildReflectionIndex } from './index-reflection'
 import { buildGameDataIndex } from './index-gamedata'
 import { buildXrefIndex } from './index-xref'
+import { buildLiftIndex } from './index-lift'
 
 interface InputFingerprint {
   size: number
@@ -222,6 +224,31 @@ async function main(): Promise<void> {
   })
   console.log(`  ${xref.meta.sidecar_log}`)
 
+  console.log('Подъём игры в Loom (сайдкар WwParse: jsonbatch + loom lift одним пакетом)...')
+  let lift: Awaited<ReturnType<typeof buildLiftIndex>>
+  try {
+    // Таблицы подъёма нужны профилю в любом случае: без кита шаг пропускается, а поиск по коду должен
+    // честно сказать, что подъёма в профиле нет, — поэтому создаём их идемпотентно здесь же.
+    const liftDb = new Database(`${staging}/index.db`, { readwrite: true, create: false })
+    try {
+      liftDb.exec(LIFT_SCHEMA_SQL)
+    } finally {
+      liftDb.close()
+    }
+    lift = await buildLiftIndex(`${staging}/index.db`, cfg, {
+      profileDir: staging,
+      gameVersion: fp.projectVersion,
+      pakPath: cfg.pakPath,
+      usmapPath: usmap!.path,
+    })
+  } catch (e) {
+    // Поиск по коду игры — дополнение к профилю, а не его условие: без него профиль публикуется
+    console.warn(`  шаг подъёма не выполнен: ${(e as Error).message}`)
+    lift = { meta: { lift_status: 'failed', lift_error: (e as Error).message }, acceptance: { assets: 0, files: 0, functions: 0, stubs: 0, failed: 0 } }
+  }
+  if (lift.meta.lift_status === 'skipped') console.log(`  пропущен: ${lift.meta.lift_skip_reason}`)
+  else if (lift.meta.lift_sidecar_log) console.log(`  ${lift.meta.lift_sidecar_log}`)
+
   console.log('Ключевые метрики:')
   const keys = [
     'objects_total',
@@ -245,6 +272,9 @@ async function main(): Promise<void> {
   }
   for (const k of ['xref_assets_scanned', 'xref_functions_scanned', 'xref_edges', 'xref_failed_assets']) {
     console.log(`  ${k}: ${xref.meta[k]}`)
+  }
+  for (const k of ['lift_status', 'lift_assets_lifted', 'lift_assets_failed', 'lift_functions', 'lift_stubs', 'lift_iterations', 'lift_export_ms', 'lift_loom_ms']) {
+    if (lift.meta[k] !== undefined) console.log(`  ${k}: ${lift.meta[k]}`)
   }
 
   const abort = (code: number, phase: string): never => {

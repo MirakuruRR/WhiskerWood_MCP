@@ -14,6 +14,7 @@ export interface ObjectHit {
   hook_path_status: string
   object_path: string | null
   is_cdo?: boolean
+  ambiguous?: string[]
 }
 
 const HOOKABLE_KINDS = new Set(['Class', 'Function'])
@@ -67,12 +68,108 @@ export function pathFields(hookPath: string | null, objectPath: string | null): 
 
 const OBJECT_COLUMNS = 'path, kind, package, outer_path, name, super_path, is_blueprint, hook_path, hook_path_status, object_path'
 
+const KIND_PRIORITY = [
+  'Class',
+  'BlueprintGeneratedClass',
+  'WidgetBlueprintGeneratedClass',
+  'AnimBlueprintGeneratedClass',
+  'ScriptStruct',
+  'Enum',
+  'Function',
+]
+
+/** Короткое имя (`ModAPI`, `BP_PlayHud`) ищется по имени объекта: путь в индексе может быть неизвестен. */
+export function findByShortName(ctx: GameContext, name: string, limit = 5): ObjectHit[] {
+  const rows = ctx.db
+    .query(
+      `SELECT ${OBJECT_COLUMNS} FROM objects WHERE (name = ?1 OR name = ?1 || '_C') AND kind IN ('Class', 'Function', 'ScriptStruct', 'Enum', 'BlueprintGeneratedClass', 'WidgetBlueprintGeneratedClass', 'AnimBlueprintGeneratedClass') LIMIT ?2`,
+    )
+    .all(name, limit * 4) as ObjectHit[]
+  if (rows.length === 0) return []
+  const rank = (kind: string): number => {
+    const i = KIND_PRIORITY.indexOf(kind)
+    return i < 0 ? KIND_PRIORITY.length : i
+  }
+  return rows
+    .map((r) => ({ r, key: `${rank(r.kind)}|${r.path.length}` }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map((x) => x.r)
+    .slice(0, limit)
+}
+
+const CLASS_KINDS = "('Class', 'BlueprintGeneratedClass', 'WidgetBlueprintGeneratedClass', 'AnimBlueprintGeneratedClass')"
+
+function findClassByAssetPath(ctx: GameContext, assetPath: string): ObjectHit | null {
+  return ctx.db
+    .query(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE kind IN ${CLASS_KINDS} AND hook_path LIKE ? LIMIT 1`)
+    .get(`${assetPath}.%`) as ObjectHit | null
+}
+
+function findClassByName(ctx: GameContext, name: string): ObjectHit | null {
+  return ctx.db
+    .query(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE kind IN ${CLASS_KINDS} AND (name = ?1 OR name = ?1 || '_C') LIMIT 1`)
+    .get(name) as ObjectHit | null
+}
+
+export interface ObjectLookup {
+  hit: ObjectHit | null
+  candidates: ObjectHit[]
+  isModPath: boolean
+}
+
+/** Резолв пользовательского пути: индексная форма, `/Script/...`, `/Game/...`, короткое имя. */
+export function lookupObject(ctx: GameContext, rawInput: string): ObjectLookup {
+  const norm = normalizeUserPath(rawInput)
+  if (norm.isModPath) return { hit: null, candidates: [], isModPath: true }
+
+  const direct = findObject(ctx, rawInput)
+  if (direct) return { hit: direct, candidates: [], isModPath: false }
+
+  if (!norm.indexPath.includes('.') && !norm.indexPath.includes('/')) {
+    const found = findByShortName(ctx, norm.indexPath)
+    if (found.length > 0) {
+      const hit = { ...found[0] }
+      if (found.length > 1) hit.ambiguous = found.slice(1).map((f) => f.path)
+      return { hit, candidates: found.slice(1), isModPath: false }
+    }
+  }
+  return { hit: null, candidates: [], isModPath: false }
+}
+
+/** Класс мода: FindAllOf идёт по короткому имени, а оно у модов совпадает — сверяем полный путь класса. */
+export function modClassSelectionChunk(classPath: string, index: number | undefined, varName = 'target'): string {
+  const className = classPath.slice(classPath.lastIndexOf('.') + 1)
+  return `local classPath = ${luaStr(classPath)}
+local cls = StaticFindObject(classPath)
+local candidateCount = 0
+local hits = {}
+if cls and cls:IsValid() then
+  for _, o in ipairs(FindAllOf(${luaStr(className)}) or {}) do
+    local ok, full = pcall(function() return o:GetClass():GetFullName() end)
+    if ok and (full == classPath or full:sub(-#classPath) == classPath) then hits[#hits + 1] = o end
+  end
+  candidateCount = #hits
+end
+local ${varName} = hits[${index ?? 1}]`
+}
+
 export function findObject(ctx: GameContext, rawInput: string): ObjectHit | null {
   const norm = normalizeUserPath(rawInput)
   const byIndex = ctx.db
     .query(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE path = ?`)
     .get(norm.indexPath) as ObjectHit | null
-  if (byIndex) return byIndex
+  if (byIndex && byIndex.kind !== 'Package') return byIndex
+
+  // Короткое имя пакета (`BP_PlayHud`) и путь ассета (`/Game/UI/BP_PlayHud`) указывают на класс внутри пакета
+  if (norm.assetPath) {
+    const byAsset = findClassByAssetPath(ctx, norm.assetPath)
+    if (byAsset) return byAsset
+  }
+  if (byIndex) {
+    const byName = findClassByName(ctx, byIndex.name)
+    if (byName) return byName
+    return byIndex
+  }
 
   if (norm.gameFullPath) {
     const byHook = ctx.db
@@ -93,6 +190,17 @@ export function findObject(ctx: GameContext, rawInput: string): ObjectHit | null
       .get(asClassPath) as ObjectHit | null
     if (byObjectClass) return byObjectClass
   }
+
+  // Короткое имя (`ModAPI`) — та же форма, что пишут в исходнике Loom: ищем по имени, первый по приоритету
+  if (!norm.indexPath.includes('.') && !norm.indexPath.includes('/')) {
+    const short = findByShortName(ctx, norm.indexPath, 5)
+    if (short.length > 0) {
+      const hit = { ...short[0] }
+      if (short.length > 1) hit.ambiguous = short.slice(1).map((s) => s.path)
+      return hit
+    }
+  }
+
   return resolveCdo(ctx, norm.indexPath)
 }
 

@@ -35,12 +35,19 @@ import { handleDeployMod } from './tools/deploy-mod'
 import { handlePackageMod, PackageModArgs } from './tools/package-mod'
 import { handleInstallMod, InstallModArgs } from './tools/install-mod'
 import { handleDiffVersions } from './tools/diff-versions'
+import { handleEventSurface } from './tools/event-surface'
+import { handleLift } from './tools/lift'
+import { handleLoomBuild, LoomBuildArgs } from './tools/loom-build'
+import { handleLoomInstall, LoomInstallArgs } from './tools/loom-install'
+import { handleLoomStatus } from './tools/loom-status'
+import { handleLoomValidate, LoomValidateArgs } from './tools/loom-validate'
 import { handleMemoryWakeup } from './tools/memory-wakeup'
 import { handleMemorySearch } from './tools/memory-search'
 import { handleMemoryAdd } from './tools/memory-add'
 import { handleMemoryInvalidate } from './tools/memory-invalidate'
 import { MEMORY_CATEGORIES } from './utils/memory-db'
-import { registerPrompts } from './prompts'
+import { registerPrompts, registerResources } from './prompts'
+import { toolEnabled } from './toolsets'
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false }
 const LIVE_READ = { readOnlyHint: true, openWorldHint: true }
@@ -120,29 +127,35 @@ export function createServer(config: ServerConfig): McpServer {
       }
     }
 
-  // Память и сравнение версий живут вне профиля: им не нужен готовый индекс текущей версии.
+  // Память, сравнение версий и инструменты кита живут вне профиля: им не нужен готовый индекс текущей версии.
   const wrapPlain =
-    <A>(fn: (args: A) => string) =>
+    <A>(fn: (args: A) => string | Promise<string>) =>
     async (args: A) => {
       try {
-        return { content: [{ type: 'text' as const, text: fn(args) }] }
+        return { content: [{ type: 'text' as const, text: await fn(args) }] }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         return { content: [{ type: 'text' as const, text: errorText('server_error', 'error', msg) }], isError: true }
       }
     }
 
+  // Группа инструмента решает, регистрировать ли его: loom-режим выключает lua-набор.
+  const registerTool = ((name: string, def: unknown, cb: unknown) => {
+    if (!toolEnabled(config, name)) return
+    return (server.registerTool as unknown as (n: string, d: unknown, c: unknown) => unknown)(name, def, cb)
+  }) as McpServer['registerTool']
+
   const versionParam = z
     .string()
     .optional()
     .describe('Версия игры (профиль индекса). По умолчанию — единственный/старший готовый профиль.')
 
-  server.registerTool(
+  registerTool(
     'ww_find_symbol',
     {
       title: 'Поиск символа',
       description:
-        'Первый вызов, когда точное имя класса, функции, структуры или енума неизвестно. Полнотекстовый поиск по индексу рефлексии. Используй ДО обращения к точным инструментам и ДО написания хуков. Не угадывай имена из строк бинарника — многие существуют в ассетах, но отсутствуют в рефлексии.',
+        'Первый вызов, когда точное имя класса, функции, структуры или енума неизвестно. Полнотекстовый поиск по индексу рефлексии. Используй ДО обращения к точным инструментам и ДО написания хуков. Не угадывай имена из строк бинарника — многие существуют в ассетах, но отсутствуют в рефлексии. bp — статус символа для Blueprint-мода (у функций как в ww_get_function, у классов in_types | not_in_types); bp_only: true оставляет только то, чем Blueprint может пользоваться (у функций callable | pure | world_context | latent | not_in_types, у классов из types.json или игровые BP, которые LoomBuild подгрузит при сборке); total_found считается до фильтра, число отброшенных — в bp_filtered.',
       inputSchema: {
         pattern: z.string().describe('Имя или его часть, можно несколько слов через пробел'),
         kind: z
@@ -150,62 +163,64 @@ export function createServer(config: ServerConfig): McpServer {
           .optional()
           .describe('Фильтр вида: Class | ScriptStruct | Enum | Function | Package | bp'),
         package: z.string().optional().describe('Фильтр по пакету/модулю, например SystemCore'),
+        bp_only: z.boolean().optional().describe('Только то, что доступно Blueprint: без функций, которые Loom вызвать не может'),
         limit: z.number().int().positive().max(200).optional(),
         version: versionParam,
       },
       annotations: READ_ONLY,
     },
-    wrap((ctx, args) => handleFindSymbol(ctx, args)),
+    wrap((ctx, args) => handleFindSymbol(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_search_members',
     {
       title: 'Обратный поиск по членам',
       description:
-        'Обратный поиск: в каком классе есть поле или метод с таким именем. Сценарий «знаю что ищу, не знаю где». Для поиска самих классов/функций предпочти ww_find_symbol.',
+        'Обратный поиск: в каком классе есть поле или метод с таким именем. Сценарий «знаю что ищу, не знаю где». Для поиска самих классов/функций предпочти ww_find_symbol. bp — статус члена для Blueprint-мода (у полей read | read_only | edit_only | hidden, у функций как в ww_get_function); bp_only: true оставляет только то, что Blueprint может использовать.',
       inputSchema: {
         pattern: z.string().describe('Имя поля или метода. По умолчанию ищется как подстрока; символ % задаёт свой шаблон, подчёркивание трактуется буквально'),
         member_kind: z.enum(['field', 'method', 'any']).optional(),
+        bp_only: z.boolean().optional().describe('Только то, что доступно Blueprint: без того, что Loom не видит или не может вызвать'),
         limit: z.number().int().positive().max(200).optional(),
         version: versionParam,
       },
       annotations: READ_ONLY,
     },
-    wrap((ctx, args) => handleSearchMembers(ctx, args)),
+    wrap((ctx, args) => handleSearchMembers(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_get_type',
     {
       title: 'Информация о типе',
       description:
-        'Class / ScriptStruct / Enum целиком: поля с офсетами и типами, родитель, список методов, наследники; для енума — значения. Путь принимается в любой форме (индексной, /Script/..., /Game/...). Для сигнатуры отдельной функции предпочти ww_get_function.',
+        'Class / ScriptStruct / Enum целиком: поля с офсетами и типами, родитель, список методов, наследники; для енума — значения. Путь принимается в любой форме (индексной, /Script/..., /Game/...). Для сигнатуры отдельной функции предпочти ww_get_function. Поля и методы помечены bp: у поля — read | read_only | edit_only | hidden (hidden — Blueprint его не видит), у метода — как bp у ww_get_function. bp: not_in_types и bp_loads_at_build: true у игрового BP, которого нет в types.json: LoomBuild подгрузит его при сборке.',
       inputSchema: {
         path: z.string().describe('Путь типа в любой форме'),
         version: versionParam,
       },
       annotations: READ_ONLY,
     },
-    wrap((ctx, args) => handleGetType(ctx, args)),
+    wrap((ctx, args) => handleGetType(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_get_function',
     {
       title: 'Сигнатура функции',
       description:
-        'Точная сигнатура функции: параметры по порядку, типы с источником (uht/objdump/usmap/none), out-параметры, возврат, и всегда — готовый hook_path для RegisterHook. НЕ собирай hook_path самостоятельно — копируй из ответа.',
+        'Точная сигнатура функции: параметры по порядку, типы с источником (uht/objdump/usmap/none), out-параметры, возврат, и всегда — готовый hook_path для RegisterHook. НЕ собирай hook_path самостоятельно — копируй из ответа. Поле bp — статус функции для Blueprint: callable | pure | latent | world_context | internal | deprecated | editor_only | not_callable | not_in_types; у каждого параметра dir: in | ref | out, hidden: true у пина, который узел заполняет сам. loom_call — готовый вызов Loom: часть до « -> » копируй в исходник как есть, после « -> » — что вызов даёт (запись в фигурных скобках читается по именам полей). НЕ собирай вызов сам — копируй loom_call. Вместо bp может прийти bp_hint: types.json недоступен (кит не настроен или ещё не собирался).',
       inputSchema: {
         path: z.string().describe('Путь функции в любой форме'),
         version: versionParam,
       },
       annotations: READ_ONLY,
     },
-    wrap((ctx, args) => handleGetFunction(ctx, args)),
+    wrap((ctx, args) => handleGetFunction(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_find_callers',
     {
       title: 'Кто вызывает функцию',
@@ -222,12 +237,12 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx, args) => handleFindCallers(ctx, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_get_bytecode',
     {
       title: 'Дизасм тела функции',
       description:
-        'Линейный дизасм BP-байткода функции (EX_*-выражения с отступами по вложенности, разобрано сайдкаром WwParse из cooked-сборки). Полезно, когда ww_trace_calls показывает ноль срабатываний или неясен порядок вызовов внутри функции — в отличие от трейса, не требует запущенной игры. Для чисто нативных (C++) функций байткода нет — вернётся no_bytecode.',
+        'Линейный дизасм BP-байткода функции (EX_*-выражения с отступами по вложенности, разобрано сайдкаром WwParse из cooked-сборки). Сначала пробуй ww_lift: он отдаёт то же тело читаемым исходником Loom, с именами енумов и вызовов вместо чисел, а этот инструмент остаётся запасным — для мест, где lift поставил пометку «not lifted», и когда нужен сам байткод. Полезно, когда ww_trace_calls показывает ноль срабатываний или неясен порядок вызовов внутри функции — в отличие от трейса, не требует запущенной игры. Для чисто нативных (C++) функций байткода нет — вернётся no_bytecode.',
       inputSchema: {
         function_path: z.string().describe('Путь функции в любой форме'),
         version: versionParam,
@@ -237,7 +252,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx, args) => handleGetBytecode(ctx, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_verify_hook',
     {
       title: 'Проверка хуковых путей',
@@ -256,7 +271,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapAsync((ctx, args) => handleVerifyHook(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_index_status',
     {
       title: 'Состояние индекса',
@@ -270,7 +285,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx) => handleIndexStatus(ctx, config)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_index_release',
     {
       title: 'Освободить index.db',
@@ -282,7 +297,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapPlain(() => handleIndexRelease()),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_get_datatable',
     {
       title: 'DataTable игры',
@@ -300,7 +315,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx, args) => handleGetDataTable(ctx, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_resolve_loc',
     {
       title: 'Текст по ключу локализации',
@@ -317,7 +332,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx, args) => handleResolveLoc(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_find_asset',
     {
       title: 'Поиск ассета',
@@ -334,7 +349,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx, args) => handleFindAsset(ctx, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_extract_asset',
     {
       title: 'Извлечь ассет из пака',
@@ -350,7 +365,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx, args) => handleExtractAsset(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_game_status',
     {
       title: 'Состояние игры и моста',
@@ -362,7 +377,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge((ctx) => handleGameStatus(ctx, config)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_game_process',
     {
       title: 'Процесс игры',
@@ -390,7 +405,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge((ctx, args) => handleGameProcess(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_capture_dumps',
     {
       title: 'Снять дампы рефлексии',
@@ -407,12 +422,12 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge((ctx, args) => handleCaptureDumps(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_game_eval',
     {
       title: 'Выполнить Lua в игре',
       description:
-        'Выполняет чанк Lua в процессе игры через UE4SS и возвращает сериализованный результат. Используй для проверки гипотез об API, поиска живых объектов (FindAllOf/FindFirstOf) и чтения состояния мира. Пиши return, иначе значения не будет. Бесконечный цикл в чанке подвесит игру. Обход UMG-виджетов руками не пиши: дамп дерева есть у ww_ui_tree.',
+        'Выполняет чанк Lua в процессе игры через UE4SS и возвращает сериализованный результат. Используй для проверки гипотез об API, поиска живых объектов (FindAllOf/FindFirstOf) и чтения состояния мира. Пиши return, иначе значения не будет. Бесконечный цикл в чанке подвесит игру. Обход UMG-виджетов руками не пиши: дамп дерева есть у ww_ui_tree. После выполнения в полях идёт bp_warning — члены из чанка, до которых Blueprint не дотягивается (сверка с types.json кита): это готовый сигнал «в Lua работает, в Loom не переносится». На результат предупреждение не влияет.',
       inputSchema: {
         lua: z.string().describe('Тело чанка. Возвращаемое значение передавай через return'),
         timeout_ms: z.number().int().positive().max(120000).optional(),
@@ -423,14 +438,19 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge((ctx, args) => handleGameEval(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_ui_tree',
     {
       title: 'Дерево виджетов',
       description:
         'Дамп поддерева UMG живой игры: класс, видимость, текстура кисти, текст, тип слота и выравнивание слота, а где смогли снять реальную геометрию — size=WxH и pos=X,Y (не всегда доступно вне живого Tick/Paint, тогда поле молча опускается). Шапка ответа показывает полное имя выбранного объекта и число кандидатов — так видно, тестовая карточка нашлась или игровая. Первый инструмент, когда надо понять устройство экрана, найти контейнер для своего виджета или увидеть, какую иконку и текст нарисовала игра: ищи в дампе tex= и text=. Без аргументов — дерево PlayHud. Ручной обход виджетов через ww_game_eval этим не заменяй.',
       inputSchema: {
-        root: z.string().optional().describe('Класс владельца для FindAllOf, по умолчанию PlayHud'),
+        root: z
+          .string()
+          .optional()
+          .describe(
+            'Класс владельца для FindAllOf, по умолчанию PlayHud; для виджета pak-мода — полный путь класса (/Game/Mods/<Мод>/<Ассет>.<Класс>_C), короткое имя не принимается',
+          ),
         object_path: z
           .string()
           .optional()
@@ -454,7 +474,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge((ctx, args) => handleUiTree(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_trace_calls',
     {
       title: 'Трейс вызовов UFunction',
@@ -465,7 +485,9 @@ export function createServer(config: ServerConfig): McpServer {
           .array(z.string())
           .max(10)
           .optional()
-          .describe('Пути функций в форме hook_path. Обязателен для action=start и одноразового режима, не нужен для read/stop'),
+          .describe(
+            'Пути функций в форме hook_path. Обязателен для action=start и одноразового режима, не нужен для read/stop. Принимаются и полные пути к функциям pak-мода (/Game/Mods/<Мод>/<Ассет>.<Класс>_C:<Функция>): сигнатуру и имена аргументов для них даёт пак мода, а сам путь проверяется живьём',
+          ),
         action: z
           .enum(['start', 'read', 'stop'])
           .optional()
@@ -481,19 +503,23 @@ export function createServer(config: ServerConfig): McpServer {
     wrapAsync((ctx, args) => handleTraceCalls(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_call',
     {
       title: 'Вызов UFunction на объекте',
       description:
-        'Зовёт произвольную UFunction по индексному пути (как ww_get_function) на найденном объекте живой игры, с аргументами по именам параметров. Сигнатура и арность проверяются до вызова по индексу. Возвращает return-значение и out-параметры. Закрывает случаи вида "нажать кнопку dev-вью" или "уплатить налог программно" без сборки виджета руками — конкретные рецепты (что дёрнуть для какого окна) веди в памяти через ww_memory_add, а не жди их от инструмента. object принимает полный путь объекта (StaticFindObject) или короткое имя класса (первый через FindAllOf, object_index — если их несколько). Массивы, сеты, карты и делегаты как аргументы не поддержаны — для них ww_game_eval. Вызов произвольной UFunction в игровом потоке может уронить игру так же, как ww_game_eval: нативный access violation pcall не ловит. Один вызов за раз, не пачкой.',
+        'Зовёт произвольную UFunction по индексному пути (как ww_get_function) на найденном объекте живой игры, с аргументами по именам параметров. Сигнатура и арность проверяются до вызова по индексу. Возвращает return-значение и out-параметры. Закрывает случаи вида "нажать кнопку dev-вью" или "уплатить налог программно" без сборки виджета руками — конкретные рецепты (что дёрнуть для какого окна) веди в памяти через ww_memory_add, а не жди их от инструмента. object принимает полный путь объекта (StaticFindObject) или короткое имя класса (первый через FindAllOf, object_index — если их несколько). С bp_only отказывает всему, что Loom не соберёт (события, private/protected, editor_only, internal, not_in_types, world_context), с причиной в bp_reason; готовый вызов Loom приходит в loom_call — и при bp_only, и без него. Путь /Game/Mods/<Мод>/... — функция pak-мода: индекс игры её не знает, сигнатуру берём из пака мода, а сам путь проверяем живьём; короткое имя для мода не принимается (у каждого мода свой BP_MapLoad_C). Массивы, сеты, карты и делегаты как аргументы не поддержаны — для них ww_game_eval. Вызов произвольной UFunction в игровом потоке может уронить игру так же, как ww_game_eval: нативный access violation pcall не ловит. Один вызов за раз, не пачкой.',
       inputSchema: {
         object: z
           .string()
-          .describe('Путь объекта (GetFullName/object_path) или короткое имя класса для FindAllOf'),
+          .describe('Путь объекта (GetFullName/object_path) или короткое имя класса для FindAllOf; для мода — полный путь класса /Game/Mods/<Мод>/<Ассет>.<Класс>_C'),
         object_index: z.number().int().positive().optional().describe('Номер кандидата (с 1), если по object нашлось несколько'),
-        function_path: z.string().describe('Путь функции в любой форме индекса'),
+        function_path: z.string().describe('Путь функции в любой форме индекса; для мода — /Game/Mods/<Мод>/<Ассет>.<Класс>_C:<Функция>'),
         args: z.record(z.string(), z.unknown()).optional().describe('Аргументы по именам параметров — из ww_get_function'),
+        bp_only: z
+          .boolean()
+          .optional()
+          .describe('Пропустить только callable и pure: отказывает событиям, private/protected, editor_only, internal, not_in_types и world_context — такая цепочка не переносится в Loom один в один'),
         version: versionParam,
       },
       annotations: LIVE_WRITE,
@@ -501,7 +527,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapAsync((ctx, args) => handleCallFunction(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_game_console',
     {
       title: 'Консольная команда игры',
@@ -516,19 +542,33 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge((ctx, args) => handleGameConsole(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_game_log',
     {
-      title: 'Лог UE4SS',
+      title: 'Лог игры: UE4SS и modlog',
       description:
-        'Разобранный UE4SS.log: фильтры по времени, уровню и имени мода. По умолчанию — записи текущей сессии игры. Первое место, куда смотреть, когда мод загрузился, но ничего не делает. Работает и при выключенной игре.',
+        'Разобранный лог: source=ue4ss (по умолчанию) — UE4SS.log с фильтрами по времени, уровню и имени Lua-мода; source=modlog — <Saved>/Logs/modlog.txt, единственный канал из shipping-игры для pak-мода: тут строки ModAPI.LogMessage и сообщения загрузчика модов (в том числе «Not loading mod» — почему pak не поднялся). У modlog нет уровней, а строки мода не несут меток времени: since=session читает с офсета, снятого при ww_game_process action=start, фильтр mod идёт по префиксу «<Мод>:», сообщения загрузчика приходят отдельным блоком warnings. Первое место, куда смотреть, когда мод загрузился, но ничего не делает. Работает и при выключенной игре.',
       inputSchema: {
+        source: z
+          .enum(['ue4ss', 'modlog'])
+          .optional()
+          .describe('ue4ss (по умолчанию) — UE4SS.log; modlog — <Saved>/Logs/modlog.txt: строки мода и сообщения загрузчика pak-модов'),
         since: z
           .string()
           .optional()
-          .describe('session (по умолчанию — с последнего старта игры), all, либо метка вида 2026-08-29 21:52:56'),
-        level: z.enum(['error', 'warn', 'info', 'all']).optional(),
-        mod: z.string().optional().describe('Имя Lua-мода, как оно печатается в логе'),
+          .describe(
+            'session (по умолчанию: у ue4ss — с метки старта, у modlog — с офсета, снятого при ww_game_process action=start), all, либо метка вида 2026-08-29 21:52:56',
+          ),
+        level: z
+          .enum(['error', 'warn', 'info', 'all'])
+          .optional()
+          .describe('только для ue4ss: у modlog уровней нет, параметр игнорируется и возвращается полем level_ignored'),
+        mod: z
+          .string()
+          .optional()
+          .describe(
+            'имя мода: у ue4ss — как печатается в логе, у modlog — из префикса «<Мод>:» у строк ModAPI.LogMessage; строки загрузчика про этот мод приходят отдельным блоком warnings',
+          ),
         limit: z.number().int().positive().max(500).optional(),
         version: versionParam,
       },
@@ -537,7 +577,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge(async (ctx, args) => handleGameLog(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_crash_report',
     {
       title: 'Разбор краша игры',
@@ -568,7 +608,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge(async (ctx, args) => handleCrashReport(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_screenshot',
     {
       title: 'Скриншот из игры',
@@ -598,7 +638,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridgeImage((ctx, args) => handleScreenshot(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_lua_api',
     {
       title: 'Справочник UE4SS Lua API',
@@ -617,7 +657,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge(async (ctx, args) => handleLuaApi(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_scaffold_mod',
     {
       title: 'Создать каркас мода',
@@ -634,7 +674,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx, args) => handleScaffoldMod(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_generate_hook',
     {
       title: 'Скелет хука по сигнатуре из индекса',
@@ -650,7 +690,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrap((ctx, args) => handleGenerateHook(ctx, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_validate_mod',
     {
       title: 'Проверка мода',
@@ -666,7 +706,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapAsync((ctx, args) => handleValidateMod(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_deploy_mod',
     {
       title: 'Развернуть мод',
@@ -681,7 +721,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapBridge((ctx, args) => handleDeployMod(ctx, config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_package_mod',
     {
       title: 'Собрать релизный zip',
@@ -696,7 +736,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapPlain((args: PackageModArgs) => handlePackageMod(config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_install_mod',
     {
       title: 'Установить релиз в игру',
@@ -714,7 +754,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapPlain((args: InstallModArgs) => handleInstallMod(config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_diff_versions',
     {
       title: 'Различия между версиями игры',
@@ -734,7 +774,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapPlain((args) => handleDiffVersions(config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_memory_wakeup',
     {
       title: 'Проектная память: обзор',
@@ -749,7 +789,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapPlain((args) => handleMemoryWakeup(config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_memory_search',
     {
       title: 'Проектная память: поиск',
@@ -767,7 +807,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapPlain((args) => handleMemorySearch(config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_memory_add',
     {
       title: 'Проектная память: записать',
@@ -801,7 +841,7 @@ export function createServer(config: ServerConfig): McpServer {
     wrapPlain((args) => handleMemoryAdd(config, args)),
   )
 
-  server.registerTool(
+  registerTool(
     'ww_memory_invalidate',
     {
       title: 'Проектная память: погасить запись',
@@ -816,7 +856,117 @@ export function createServer(config: ServerConfig): McpServer {
     wrapPlain((args) => handleMemoryInvalidate(config, args)),
   )
 
-  registerPrompts(server)
+  registerTool(
+    'ww_lift',
+    {
+      title: 'Поднять Blueprint в исходник Loom',
+      description:
+        'Два режима. asset_path — поднять cooked Blueprint игры или Workshop-мода обратно в читаемый исходник Loom (.lm): сайдкар WwParse отдаёт JSON пакета по .usmap, loom.exe из кита поднимает его в скретч-проект state/lift/<версия игры>/, и в ответ приходит текст .lm вместе с пометками. Зови, когда нужно понять логику игрового Blueprint и писать мод на Loom: енумы, вызовы и структуры приходят именами, а не числами, — в отличие от ww_get_bytecode, который даёт EX_*-дизасм и обрезается. Подъём Loom 0.1.0 отказывает на пакет целиком, поэтому инструмент сам добивает отказы фолбэками: стабит функции с неподдерживаемым байткодом (EX_SwitchValue, EX_VectorConst, EX_CallMulticastDelegate и т. п.), выбрасывает дерево виджетов, снимает невыразимые значения по умолчанию. Каждое такое место помечено в .lm строкой // not lifted с причиной и готовой командой ww_get_bytecode: пустое тело — это заглушка, а не отсутствие логики; раскладку выброшенного дерева виджетов показывает ww_ui_tree. Путь принимается в любой форме индекса (BP_PlayHud, BP_PlayHud.BP_PlayHud_C, /Game/UI/BP_PlayHud.BP_PlayHud_C), /Game/Mods/<Мод>/... ищется в паках мода — в индексе игры их нет. Ответ кэшируется по (версия игры, ассет), refresh: true пересобирает заново. pattern — поиск по коду игры: если индекс собран с шагом подъёма (bun run setup), в нём есть исходники всех BP, и поиск отдаёт функцию, номер строки и сниппет; если профиль собран без этого шага, ответ будет no_code_index с объяснением.',
+      inputSchema: {
+        asset_path: z
+          .string()
+          .optional()
+          .describe('Путь Blueprint в любой форме индекса: BP_PlayHud, BP_PlayHud.BP_PlayHud_C, /Game/UI/BP_PlayHud.BP_PlayHud_C, /Game/Mods/<Мод>/BP_X'),
+        pattern: z.string().optional().describe('Поиск по поднятому коду игры: слово или фраза из тела функции (взаимоисключим с asset_path)'),
+        limit: z.number().int().positive().max(100).optional().describe('Сколько совпадений вернуть в режиме pattern'),
+        refresh: z.boolean().optional().describe('Игнорировать кэш и поднять заново (только для asset_path)'),
+        version: versionParam,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrapAsync((ctx, args) => handleLift(ctx, config, args)),
+  )
+
+  registerTool(
+    'ww_loom_build',
+    {
+      title: 'Сборка Blueprint из Loom',
+      description:
+        "Сборка Blueprint'ов из исходников Loom (.lm) и чтение её отчёта; свежий индекс игры не нужен. action=status (по умолчанию): последний <кит>/Intermediate/Loom/report.json (ok, sources, errors, blueprints по статусам built|unchanged|failed|skipped) и хвост строк LogLoomBuild/LogLoom из <кит>/Saved/Logs/Whiskerwood.log, открыт ли редактор и что с последним джобом сборки (с job_id — с этим джобом); ничего не собирает. action=build: если редактор с этим .uproject открыт, сборку запускает сам плагин по DirectoryWatcher при сохранении .lm — инструмент ждёт report.json новее своего старта (wait_ms, по умолчанию 90000) и говорит, подхватилось ли (picked_up | already_fresh | no_build_seen); если редактор закрыт, идёт headless-сборка UnrealEditor-Cmd -run=LoomBuild джобом: ответ отдаёт job_id, а прогресс и итог читаются через action=status job_id=… (сборка идёт десятки секунд, холодный старт дольше; джоб переживает перезапуск сервера). action=cancel снимает headless-сборку деревом процессов (taskkill /T /F по раннеру; без job_id — идущую или последнюю сборку); cook сюда не относится, его статус и отмена — в ww_loom_install. force собирает все Blueprint'ы, даже неизменившиеся, и доступен только при закрытом редакторе. Две сборки одного проекта одновременно недопустимы: при работающем джобе ответ busy, при чужом командире (-run=Cook) project_busy. failed в применителе: перед следующей сборкой удали автосейвы пакетов из <кит>/Saved/Autosaves, иначе следующая сборка может упасть на assert FindObject<UBlueprint>; failed с 0 Blueprints — отказ уровня исходника, безопасный.",
+      inputSchema: {
+        action: z
+          .enum(['status', 'build', 'cancel'])
+          .optional()
+          .describe('По умолчанию status: отчёт и лог без сборки; build — собрать; cancel — снять headless-сборку'),
+        job_id: z.string().optional().describe('id джоба из action=build: status показывает этот джоб, cancel снимает его'),
+        force: z.boolean().optional().describe("Собрать все Blueprint'ы, даже неизменившиеся; только при закрытом редакторе (headless)"),
+        wait_ms: z.number().int().positive().max(600000).optional().describe('Сколько ждать сборку, запущенную редактором по DirectoryWatcher, по умолчанию 90000'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrapPlain((args: LoomBuildArgs) => handleLoomBuild(config, args)),
+  )
+
+  registerTool(
+    'ww_loom_install',
+    {
+      title: 'Собрать и установить pak-мод',
+      description:
+        'Cook & Install без редактора: start → status → install. action=start запускает RunUAT BuildCookRun с аргументами WWModTools джобом (идут минуты) и отвечает job_id. action=status только читает: прогресс cook, а по завершённому джобу — найденный пак мода среди pakchunk<N>-Windows.pak, итог проверок (только ассеты мода, размер меньше лимита загрузчика, имена папки/.uplugin/.pak совпадают, EngineVersion = версии движка кита) и сравнение с <saved>/mods/<Мод>: ready_to_install или installed, если там уже лежат те же файлы. Джоб смотрится только при явном job_id: status и install с одним mod_name работают по паку, который уже лежит в pakchunk, — исход прошлых cook (упал, отменён) им не мешает, а если cook этого мода идёт прямо сейчас, ответ busy с его job_id; status без аргументов показывает идущий или последний cook. action=install — единственное копирующее действие: по завершённому cook (job_id) или по уже собранному паку (mod_name) копирует <Мод>.pak и <Мод>.uplugin в <saved>/mods/<Мод>/ с бэкапом прежней версии в state/backup; если файлы уже совпадают побайтно — already_installed, ничего не копируется. start с skip_cook: true — установка уже собранного пака одним вызовом, без RunUAT (то же, что install mod_name=… без job_id). action=cancel снимает cook деревом процессов: job_id — этот джоб, mod_name — идущий или последний cook этого мода, без аргументов — любой идущий или последний. Единственный, кроме ww_install_mod и ww_extract_asset, инструмент, пишущий за пределы песочницы: ровно в <saved>/mods/<Мод> (в <кит>/Content и <кит>/Plugins не пишет). Pak-мод подхватывается только при старте игры — после установки нужен ww_game_process restart save=… wait_for=world. Индекс игры не нужен: работает и на устаревшем профиле.',
+      inputSchema: {
+        action: z
+          .enum(['start', 'status', 'install', 'cancel'])
+          .describe('start — cook джобом (или установка при skip_cook); status — только чтение: прогресс, пак, проверки; install — копирование в <saved>/mods пака завершённого cook (job_id) или уже собранного (mod_name); cancel — снять cook'),
+        mod_name: z
+          .string()
+          .optional()
+          .describe('Имя папки мода в <кит>/Content/Mods; оно же имя .uplugin и .pak. Обязательно для start; для status и install без job_id — какой собранный пак проверить или поставить; для cancel без job_id — чей cook снять'),
+        job_id: z.string().optional().describe('id джоба из action=start; только с ним status и install смотрят на джоб; без него status и install с mod_name берут уже собранный пак, cancel с mod_name — идущий или последний cook этого мода'),
+        skip_cook: z.boolean().optional().describe('Только для start: установка уже собранного пака, без RunUAT'),
+        version: versionParam,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrapPlain((args: LoomInstallArgs) => handleLoomInstall(config, args)),
+  )
+
+  registerTool(
+    'ww_loom_status',
+    {
+      title: 'Статус кита Loom',
+      description:
+        'Кит Loom и его расхождения с игрой: найден ли кит, движок, loom.exe и types.json, открыт ли редактор, последний report.json, версия Loom против плагина, mtime types.json против пака игры и главное — сверка types.json с индексом: что есть в ките, но пропало из игры, и какие BlueprintCallable-функции игры Loom не видит. Работает без свежего профиля: без индекса отдаёт всё, кроме сверки.',
+      inputSchema: { version: versionParam },
+      annotations: READ_ONLY,
+    },
+    wrapPlain((args) => handleLoomStatus(config, args)),
+  )
+
+  registerTool(
+    'ww_loom_validate',
+    {
+      title: 'Проверка Loom-мода',
+      description:
+        'Проверка Loom-мода до сборки: loom check по проекту мода плюс правила, которых check не видит, — заголовок blueprint и путь файла, имя папки/.uplugin/PAL, LogMessage без префикса мода, \\n в значении по умолчанию, наследование от игрового виджета (пустой Loom_Canvas поверх дерева родителя), override функции с возвращаемым значением, присваивание DeprecateSlateVector2D-полей, обращение к миру в BP_MapLoad до onLoadingFinished, BOM в начале файла, грабли Loom из памяти проекта. Отдельно сверяет ссылки на игровые классы, функции и поля с индексом: есть в ките, но нет в игре — стабы кита разъехались после патча. missing с именами игровых Blueprint — не ошибка, LoomBuild подгружает их сам. Работает и без свежего профиля: сверка с игрой тогда опускается.',
+      inputSchema: {
+        mod_root: z.string().optional().describe('Каталог мода; взаимоисключим с mod_name'),
+        mod_name: z.string().optional().describe('Имя папки мода в <кит>/Content/Mods, например research_notifier'),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrapPlain((args: LoomValidateArgs) => handleLoomValidate(config, args)),
+  )
+
+  registerTool(
+    'ww_event_surface',
+    {
+      title: 'Точки реакции класса',
+      description:
+        'На что подписаться и что переопределить в Loom-моде: у класса или подсистемы — точки реакции по убыванию предпочтения. 1) делегаты ModAPI (глобальные) с готовой строкой bind и сигнатурой колбэка; 2) диспетчеры BlueprintAssignable самого класса и классов из его полей (глубина depth, по умолчанию 1) — тоже с bind; 3) события, переопределяемые наследником (флаг event), и следы спавна: где класс и его подклассы стоят в DataTable (подстрочный поиск — КАНДИДАТЫ, подмена через ModAPI.WriteDataTableValue) и рёбра ref xref; 4) последним средством — опрос в Tick с bTickEvenWhenPaused и TG_PostUpdateWork. У каждой точки поле verify: как проверить её вживую через ww_trace_calls (путь берётся из hook_path индекса), и evidence: откуда взяты данные (types.json кита + таблицы индекса). Отличие от ww_verify_hook: тот проверяет, годится ли путь для RegisterHook в Lua-моде, а этот отвечает, чем в Blueprint заменить сам хук. Без types.json кита отвечает types_json_unavailable: пропиши kitDir и собери кит.',
+      inputSchema: {
+        class_path: z.string().describe('Класс или подсистема: индексный путь, /Script/..., /Game/... или короткое имя'),
+        depth: z.number().int().min(0).max(3).optional().describe('Глубина обхода полей за диспетчерами, по умолчанию 1 (0 — только сам класс)'),
+        limit: z.number().int().positive().max(200).optional().describe('Максимум точек в каждой секции (ModAPI, диспетчеры, события), по умолчанию 12'),
+        version: versionParam,
+      },
+      annotations: READ_ONLY,
+    },
+    wrap((ctx, args) => handleEventSurface(ctx, config, args)),
+  )
+
+  registerPrompts(server, config)
+  registerResources(server, config)
 
   return server
 }

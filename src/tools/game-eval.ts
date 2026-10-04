@@ -2,6 +2,7 @@ import { ServerConfig } from '../config'
 import { GameContext } from '../utils/game-context'
 import { getBridge } from '../utils/bridge-client'
 import { renderAiText, Scalar } from '../utils/ai-text'
+import { bpReach, bpReachLine } from '../utils/bp-reach'
 import { bridgeFailureFields, echoFields } from './bridge-common'
 
 export interface GameEvalArgs {
@@ -19,6 +20,15 @@ export async function handleGameEval(
   const res = await bridge.call('eval', args.lua, timeout)
   const fields: Record<string, Scalar> = { ...echoFields(ctx) }
 
+  let warning: string | null = null
+  if (ctx) {
+    try {
+      warning = bpReachLine(bpReach(ctx, config, args.lua))
+    } catch {
+      warning = null
+    }
+  }
+
   if (res.status === 'ok') {
     let body = res.body
     const execLine = /^exec=(\w+)\n?/.exec(body)
@@ -28,6 +38,7 @@ export async function handleGameEval(
     }
     fields.status = 'ok'
     fields.elapsed_ms = res.elapsedMs
+    if (warning) fields.bp_warning = warning
     return renderAiText({
       reportType: 'game_eval',
       fields,
@@ -38,6 +49,7 @@ export async function handleGameEval(
   if (res.status === 'error') {
     fields.status = 'lua_error'
     fields.elapsed_ms = res.elapsedMs
+    if (warning) fields.bp_warning = warning
     return renderAiText({
       reportType: 'game_eval',
       fields,

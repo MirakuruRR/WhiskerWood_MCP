@@ -1,5 +1,8 @@
-import { existsSync, mkdirSync, realpathSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, realpathSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, resolve } from 'node:path'
+
+export const TOOLSETS = ['recon', 'live', 'lua', 'memory', 'loom'] as const
+export type Toolset = (typeof TOOLSETS)[number]
 
 export interface ServerConfig {
   gameDir: string
@@ -13,6 +16,12 @@ export interface ServerConfig {
   sandboxRoots: string[]
   extractRoot: string
   saveDir: string
+  savedDir: string
+  liftDir: string
+  jobsDir: string
+  kitDir: string | null
+  engineDir: string | null
+  toolsets: Toolset[]
   steamAppId: string
   defaultLangs: string[]
   bridgePollMs: number
@@ -32,6 +41,9 @@ const TEMPLATE = `{
   "sandboxRoots": ["{modsRepo}", "{stateDir}", "{distDir}"],
   "extractRoot":  "{stateDir}/extracted",
   "saveDir":      "%LOCALAPPDATA%/Whiskerwood/Saved/saves_player",
+  "kitDir":       "",
+  "engineDir":    "",
+  "toolsets":     ["recon", "live", "lua", "memory", "loom"],
   "steamAppId":   "",
   "defaultLangs": ["En", "Ru"],
   "bridgePollMs": 120,
@@ -103,7 +115,21 @@ export function loadConfig(): ServerConfig {
     typeof saveDirRaw === 'string' && saveDirRaw.length > 0
       ? expand(saveDirRaw)
       : norm(`${process.env.LOCALAPPDATA ?? ''}/${basename(gameDir)}/Saved/saves_player`)
+  const savedDir = norm(`${dirname(saveDir)}`)
   const steamAppId = typeof raw.steamAppId === 'string' ? raw.steamAppId.trim() : ''
+
+  const optPath = (key: string): string | null => {
+    const v = raw[key]
+    if (typeof v !== 'string' || v.trim().length === 0) return null
+    return expand(v)
+  }
+  const kitDir = optPath('kitDir')
+  const engineDir = optPath('engineDir')
+
+  const toolsetsRaw = raw.toolsets
+  const toolsets: Toolset[] = Array.isArray(toolsetsRaw)
+    ? (toolsetsRaw.map(String).filter((t) => (TOOLSETS as readonly string[]).includes(t)) as Toolset[])
+    : [...TOOLSETS]
 
   const rootsRaw = raw.sandboxRoots
   const sandboxRoots = (Array.isArray(rootsRaw) && rootsRaw.length > 0 ? (rootsRaw as string[]) : []).map((r) =>
@@ -126,6 +152,12 @@ export function loadConfig(): ServerConfig {
     dumpsDir,
     modsRepo: modsRepoRaw,
     saveDir,
+    savedDir,
+    liftDir: norm(`${stateDirRaw}/lift`),
+    jobsDir: norm(`${stateDirRaw}/jobs`),
+    kitDir,
+    engineDir,
+    toolsets,
     steamAppId,
     sandboxRoots,
     extractRoot,
@@ -154,7 +186,7 @@ export function validateConfig(cfg: ServerConfig): string[] {
 
   // dumpsDir и modsRepo заводятся сами: на свежей установке дампов ещё нет,
   // а репозиторий модов может быть и просто пустым каталогом
-  for (const p of [cfg.stateDir, cfg.distDir, cfg.extractRoot, cfg.dumpsDir, cfg.modsRepo]) {
+  for (const p of [cfg.stateDir, cfg.distDir, cfg.extractRoot, cfg.dumpsDir, cfg.modsRepo, cfg.liftDir, cfg.jobsDir]) {
     try {
       mkdirSync(p, { recursive: true })
     } catch {
@@ -187,5 +219,11 @@ export function configWarnings(cfg: ServerConfig): string[] {
   if (!existsSync(`${cfg.ue4ssDir}/UE4SS.dll`) && !existsSync(`${cfg.ue4ssDir}/../dwmapi.dll`)) {
     warnings.push(`в ${cfg.ue4ssDir} не видно UE4SS.dll, а рядом с exe — dwmapi.dll: UE4SS, похоже, не установлен`)
   }
+  if (cfg.kitDir && !existsSync(cfg.kitDir)) warnings.push(`kitDir: каталог не существует: ${cfg.kitDir}`)
+  else if (cfg.kitDir && !existsSync(`${cfg.kitDir}/${basename(cfg.kitDir)}.uproject`)) {
+    const found = readdirSync(cfg.kitDir).filter((f) => f.endsWith('.uproject'))
+    if (found.length === 0) warnings.push(`kitDir: в ${cfg.kitDir} нет .uproject — это не мод-кит`)
+  }
+  if (cfg.engineDir && !existsSync(cfg.engineDir)) warnings.push(`engineDir: каталог не существует: ${cfg.engineDir}`)
   return warnings
 }

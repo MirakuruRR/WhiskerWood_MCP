@@ -29,7 +29,9 @@ internal static class Program
         {
             "data" => RunData(args),
             "xref" => RunXref(args),
-            _ => Fail($"неизвестная команда: {verb} (ожидались data | xref)"),
+            "json" => RunJson(args),
+            "jsonbatch" => RunJsonBatch(args),
+            _ => Fail($"неизвестная команда: {verb} (ожидались data | xref | json | jsonbatch)"),
         };
     }
 
@@ -44,6 +46,215 @@ internal static class Program
         var m = System.Text.RegularExpressions.Regex.Match(Path.GetFileName(usmap), @"-(\d+)\.(\d+)\.\d+-\d+\+");
         if (m.Success && Enum.TryParse<EGame>($"GAME_UE{m.Groups[1].Value}_{m.Groups[2].Value}", out var game)) return game;
         Console.Error.WriteLine($"версия движка не определяется по имени .usmap (ждём <Game>-5.8.3-0+...): {usmap}");
+        return null;
+    }
+
+    /// <summary>Версия движка для чтения пака: у игры — из имени .usmap (EngineOf), у мода — из
+    /// EngineVersion его .uplugin. Моды старого кита собраны 5.6 и EngineVersion не пишут вовсе.</summary>
+    private static EGame? EngineFor(string usmap, string? uplugin, string? engine)
+    {
+        if (!string.IsNullOrEmpty(engine))
+        {
+            if (Enum.TryParse<EGame>(engine, out var named)) return named;
+            Console.Error.WriteLine($"неизвестная версия движка: {engine}");
+            return null;
+        }
+        if (uplugin is null) return EngineOf(usmap);
+        if (!File.Exists(uplugin))
+        {
+            Console.Error.WriteLine($".uplugin не найден: {uplugin}");
+            return null;
+        }
+        string? version;
+        try
+        {
+            version = (JsonConvert.DeserializeObject<Dictionary<string, object?>>(File.ReadAllText(uplugin)) ?? [])
+                .GetValueOrDefault("EngineVersion") as string;
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($".uplugin не разобран ({uplugin}): {e.Message}");
+            return null;
+        }
+        if (string.IsNullOrWhiteSpace(version)) return EGame.GAME_UE5_6;
+        var parts = version.Split('.');
+        var name = parts.Length >= 2 ? $"GAME_UE{parts[0]}_{parts[1]}" : $"GAME_UE{parts[0]}_0";
+        if (Enum.TryParse<EGame>(name, out var fromPlugin)) return fromPlugin;
+        Console.Error.WriteLine($".uplugin называет версию {version}, которой нет в CUE4Parse: {uplugin}");
+        return null;
+    }
+
+    private static int RunJson(string[] rawArgs)
+    {
+        string? paks = null, usmap = null, asset = null, output = null, uplugin = null, engine = null;
+        for (var i = 0; i < rawArgs.Length; i++)
+        {
+            switch (rawArgs[i])
+            {
+                case "--paks": paks = rawArgs[++i]; break;
+                case "--usmap": usmap = rawArgs[++i]; break;
+                case "--asset": asset = rawArgs[++i]; break;
+                case "--out": output = rawArgs[++i]; break;
+                case "--uplugin": uplugin = rawArgs[++i]; break;
+                case "--engine": engine = rawArgs[++i]; break;
+                default:
+                    Console.Error.WriteLine($"неизвестный аргумент: {rawArgs[i]}");
+                    return 2;
+            }
+        }
+
+        if (paks is null || usmap is null || asset is null || output is null)
+        {
+            Console.Error.WriteLine("использование: WwParse json --paks <dir> --usmap <file.usmap> --asset <путь> --out <file.json> [--uplugin <file.uplugin>] [--engine GAME_UE5_6]");
+            return 2;
+        }
+        if (!Directory.Exists(paks)) { Console.Error.WriteLine($"каталог паков не найден: {paks}"); return 2; }
+        if (!File.Exists(usmap)) { Console.Error.WriteLine($".usmap не найден: {usmap}"); return 2; }
+        if (EngineFor(usmap, uplugin, engine) is not { } game) return 2;
+
+        using var provider = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(game), StringComparer.OrdinalIgnoreCase);
+        provider.MappingsContainer = new FileUsmapTypeMappingsProvider(usmap, StringComparer.OrdinalIgnoreCase);
+        // Без этого UStruct.ScriptBytecode всегда пуст, и lift молча выдаёт пустые тела.
+        provider.ReadScriptData = true;
+        provider.Initialize();
+        provider.Mount();
+
+        var key = FindAsset(provider, asset);
+        if (key is null) { Console.Error.WriteLine($"ассет не найден среди паков {paks}: {asset}"); return 2; }
+
+        List<UObject> exports;
+        try
+        {
+            exports = provider.LoadPackage(key).GetExports().ToList();
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"пакет не прочитан ({key}): {e.Message}");
+            return 1;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
+        File.WriteAllText(output, JsonConvert.SerializeObject(exports), new UTF8Encoding(false));
+        Console.Error.WriteLine($"WwParse json: {key}, экспортов {exports.Count}, движок {game}, {new FileInfo(output).Length} байт");
+        return 0;
+    }
+
+    /// <summary>Пакетный экспорт: паки монтируются один раз, дальше по списку ассетов пишется по JSON на
+    /// пакет (подъём всей игры одним пакетом — пункт J). Список — файл, по пути в строке; в каталоге
+    /// остаётся manifest.jsonl с соответствием «ассет — файл — число экспортов».</summary>
+    private static int RunJsonBatch(string[] rawArgs)
+    {
+        string? paks = null, usmap = null, assets = null, outDir = null, uplugin = null, engine = null;
+        var limit = 0;
+        for (var i = 0; i < rawArgs.Length; i++)
+        {
+            switch (rawArgs[i])
+            {
+                case "--paks": paks = rawArgs[++i]; break;
+                case "--usmap": usmap = rawArgs[++i]; break;
+                case "--assets": assets = rawArgs[++i]; break;
+                case "--out-dir": outDir = rawArgs[++i]; break;
+                case "--limit": limit = int.Parse(rawArgs[++i]); break;
+                case "--uplugin": uplugin = rawArgs[++i]; break;
+                case "--engine": engine = rawArgs[++i]; break;
+                default:
+                    Console.Error.WriteLine($"неизвестный аргумент: {rawArgs[i]}");
+                    return 2;
+            }
+        }
+
+        if (paks is null || usmap is null || assets is null || outDir is null)
+        {
+            Console.Error.WriteLine("использование: WwParse jsonbatch --paks <dir> --usmap <file.usmap> --assets <список.txt> --out-dir <dir> [--limit N] [--uplugin <file.uplugin>] [--engine GAME_UE5_6]");
+            return 2;
+        }
+        if (!Directory.Exists(paks)) { Console.Error.WriteLine($"каталог паков не найден: {paks}"); return 2; }
+        if (!File.Exists(usmap)) { Console.Error.WriteLine($".usmap не найден: {usmap}"); return 2; }
+        if (!File.Exists(assets)) { Console.Error.WriteLine($"список ассетов не найден: {assets}"); return 2; }
+        if (EngineFor(usmap, uplugin, engine) is not { } game) return 2;
+
+        var wanted = File.ReadAllLines(assets)
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0 && !l.StartsWith("#", StringComparison.Ordinal))
+            .ToList();
+        if (limit > 0 && wanted.Count > limit) wanted = wanted.Take(limit).ToList();
+
+        Directory.CreateDirectory(outDir);
+        using var provider = new DefaultFileProvider(paks, SearchOption.TopDirectoryOnly, new VersionContainer(game), StringComparer.OrdinalIgnoreCase);
+        provider.MappingsContainer = new FileUsmapTypeMappingsProvider(usmap, StringComparer.OrdinalIgnoreCase);
+        provider.ReadScriptData = true;
+        provider.Initialize();
+        provider.Mount();
+
+        var manifest = Path.Combine(outDir, "manifest.jsonl");
+        using var writer = new StreamWriter(manifest, false, new UTF8Encoding(false));
+        var written = 0;
+        var failed = 0;
+        var started = Environment.TickCount64;
+
+        for (var i = 0; i < wanted.Count; i++)
+        {
+            var asset = wanted[i];
+            var key = FindAsset(provider, asset);
+            if (key is null)
+            {
+                failed++;
+                writer.WriteLine(JsonConvert.SerializeObject(new { kind = "asset", index = i, asset, file = (string?)null, exports = 0, error = "ассет не найден среди паков" }));
+                continue;
+            }
+
+            List<UObject> exports;
+            try
+            {
+                exports = provider.LoadPackage(key).GetExports().ToList();
+            }
+            catch (Exception e)
+            {
+                failed++;
+                writer.WriteLine(JsonConvert.SerializeObject(new { kind = "asset", index = i, asset, file = (string?)null, exports = 0, error = e.Message }));
+                continue;
+            }
+
+            var file = Path.Combine(outDir, i + ".json");
+            File.WriteAllText(file, JsonConvert.SerializeObject(exports), new UTF8Encoding(false));
+            written++;
+            writer.WriteLine(JsonConvert.SerializeObject(new { kind = "asset", index = i, asset, file = Path.GetFileName(file), exports = exports.Count, error = (string?)null }));
+        }
+
+        var ms = Environment.TickCount64 - started;
+        writer.WriteLine(JsonConvert.SerializeObject(new { kind = "summary", requested = wanted.Count, written, failed, ms, engine = game.ToString() }));
+        writer.Flush();
+
+        Console.Error.WriteLine($"WwParse jsonbatch: ассетов {wanted.Count}, выгружено {written}, ошибок {failed}, движок {game}, {ms} мс");
+        return failed > 0 && written == 0 ? 1 : 0;
+    }
+
+    /// <summary>Ключ ассета в провайдере: путь /Game/... или готовый ключ пака, с расширением и без;
+    /// если по пути не нашлось — по имени файла, когда такое имя в паках одно.</summary>
+    private static string? FindAsset(DefaultFileProvider provider, string asset)
+    {
+        var raw = asset.Replace('\\', '/').Trim();
+        foreach (var ext in new[] { ".uasset", ".umap", ".uexp", ".ubulk", ".uptnl" })
+        {
+            if (raw.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) { raw = raw[..^ext.Length]; break; }
+        }
+        // объектная форма "/Game/UI/BP_X.BP_X_C" — берём сам пакет
+        var dot = raw.LastIndexOf('.');
+        if (dot > raw.LastIndexOf('/')) raw = raw[..dot];
+
+        var key = raw.TrimStart('/');
+        if (key.StartsWith("Game/", StringComparison.OrdinalIgnoreCase)) key = "Whiskerwood/Content/" + key["Game/".Length..];
+        else if (key.StartsWith("Engine/", StringComparison.OrdinalIgnoreCase)) key = "Engine/Content/" + key["Engine/".Length..];
+
+        var files = provider.Files.Keys.ToList();
+        var exact = files.FirstOrDefault(k => k.Equals(key + ".uasset", StringComparison.OrdinalIgnoreCase))
+                    ?? files.FirstOrDefault(k => k.Equals(key, StringComparison.OrdinalIgnoreCase));
+        if (exact is not null) return exact;
+
+        var name = key.Split('/').Last();
+        var byName = files.Where(k => k.EndsWith("/" + name + ".uasset", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (byName.Count == 1) return byName[0];
+        if (byName.Count > 1) Console.Error.WriteLine($"имя {name} есть в нескольких паках: {string.Join(", ", byName.Take(10))}");
         return null;
     }
 

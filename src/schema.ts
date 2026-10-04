@@ -1,5 +1,31 @@
 export const INDEX_SCHEMA_VERSION = 4
 
+/** Таблицы подъёма всей игры (пункт J). Отдельным блоком и без смены версии схемы: их создаёт и наполняет
+ *  index-lift идемпотентно, поэтому профиль, собранный до появления шага подъёма, продолжает открываться,
+ *  а поиск по коду в нём честно отвечает, что подъёма в профиле нет. */
+export const LIFT_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS code_functions (
+  rowid         INTEGER PRIMARY KEY,
+  function_path TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  asset_path    TEXT NOT NULL,
+  file          TEXT NOT NULL,
+  line_from     INTEGER NOT NULL,
+  line_to       INTEGER NOT NULL,
+  stub          INTEGER NOT NULL DEFAULT 0,
+  text          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS code_functions_name_idx  ON code_functions(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS code_functions_asset_idx ON code_functions(asset_path);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
+  name, path, text,
+  content='code_functions', content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2'
+);
+`
+
 export const INDEX_SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
 
@@ -161,7 +187,7 @@ CREATE TABLE function_bytecode (
   expr_count    INTEGER NOT NULL,
   disasm        TEXT NOT NULL
 );
-`
+${LIFT_SCHEMA_SQL}`
 
 export interface ObjectRow {
   path: string
@@ -238,4 +264,17 @@ export interface FtsSrcRow {
   path: string
   package: string
   kind: string
+}
+
+export interface CodeFunctionRow {
+  rowid: number
+  function_path: string
+  name: string
+  kind: string
+  asset_path: string
+  file: string
+  line_from: number
+  line_to: number
+  stub: number
+  text: string
 }

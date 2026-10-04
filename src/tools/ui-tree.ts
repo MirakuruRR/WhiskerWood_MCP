@@ -2,8 +2,9 @@ import { ServerConfig } from '../config'
 import { GameContext } from '../utils/game-context'
 import { getBridge } from '../utils/bridge-client'
 import { renderAiText, Scalar } from '../utils/ai-text'
+import { isModAssetInput, modPathHint, parseModAssetPath } from '../utils/mod-asset'
 import { bridgeFailureFields, echoFields } from './bridge-common'
-import { luaStr } from './common'
+import { luaStr, modClassSelectionChunk } from './common'
 
 export interface UiTreeArgs {
   root?: string
@@ -20,6 +21,11 @@ function selectionChunk(root: string, objectPath: string | undefined, index: num
   if (objectPath) {
     return `local owner = StaticFindObject(${luaStr(objectPath)})
 local candidateCount = owner and 1 or 0
+if not owner or not owner:IsValid() then return "root_not_found" end`
+  }
+  const modRef = parseModAssetPath(root)
+  if (modRef) {
+    return `${modClassSelectionChunk(modRef.classPath, index, 'owner')}
 if not owner or not owner:IsValid() then return "root_not_found" end`
   }
   return `local candidates = FindAllOf(${luaStr(root)}) or {}
@@ -131,7 +137,13 @@ export async function handleUiTree(
   const depth = Math.min(Math.max(args.depth ?? 6, 1), 20)
   const bridge = getBridge(config)
   const res = await bridge.call('eval', chunk(root, args.object_path, args.index, args.field, depth, args.match_name), 30_000)
+  const modRef = args.object_path ? null : parseModAssetPath(root)
   const fields: Record<string, Scalar> = { ...echoFields(ctx), root, depth }
+  if (modRef) {
+    fields.mod = modRef.mod
+    fields.mod_class = modRef.classPath
+    fields.mod_path_note = 'класс мода: инстансы ищутся по короткому имени и сверяются полным путём класса'
+  }
   if (args.object_path) fields.object_path = args.object_path
   if (args.index !== undefined) fields.index = args.index
   if (args.field) fields.field = args.field
@@ -140,7 +152,11 @@ export async function handleUiTree(
   if (res.status === 'ok') {
     const body = res.body.replace(/^exec=\w+\n/, '').trim()
     if (body === 'root_not_found' || body === 'field_not_found') {
-      return renderAiText({ reportType: 'ui_tree', fields: { ...fields, status: body } })
+      const hint =
+        body === 'root_not_found' && !args.object_path && !isModAssetInput(root)
+          ? `короткое имя ищется среди игровых классов; класс мода указывай полным путём — ${modPathHint()}`
+          : undefined
+      return renderAiText({ reportType: 'ui_tree', fields: { ...fields, status: body, ...(hint ? { hint } : {}) } })
     }
     // Дерево совпадений может быть пустым (match_name ничего не нашёл) — не завязываемся
     // на trailing-\n, которую съедает trim(), режем по первым двум строкам явно.

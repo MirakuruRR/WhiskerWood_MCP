@@ -14,16 +14,24 @@
 │    ├─ index-reflection : ObjectDump + UHT + usmap ──► SQLite         │
 │    ├─ index-gamedata   : сайдкар WwParse data (CUE4Parse) ──► SQLite │
 │    ├─ index-xref       : сайдкар WwParse xref (CUE4Parse) ──► SQLite │
+│    ├─ index-lift       : подъём всех BP в .lm + FTS кода (нужен кит) │
 │    ├─ приёмочные проверки                                            │
 │    └─ атомарная публикация dist/games/whiskerwood-<версия>/          │
 └──────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─ READ (миллисекунды, интерактивно) ──────────────────────────────────┐
-│  MCP stdio ──► 36 инструментов ──► index.db (readonly) + memory.db   │
+│  MCP stdio ──► 42 инструмента по группам, 4 промпта, ресурсы-шаблоны │
+│            ──► index.db (readonly) + memory.db                       │
 └──────────────────────────────────────────────────────────────────────┘
                               ↕ (живые инструменты)
 ┌─ МОСТ ───────────────────────────────────────────────────────────────┐
 │  сервер ⇄ файлы в state/bridge/ ⇄ WWBridge (Lua в процессе игры)     │
+└──────────────────────────────────────────────────────────────────────┘
+                              ↕ (Loom-режим: сборка pak-мода)
+┌─ LOOM (минуты, по запросу) ──────────────────────────────────────────┐
+│  кит ──► loom.exe lift/check/build ──► .lm и ops/                    │
+│  UnrealEditor-Cmd -run=LoomBuild ──► Blueprint ──► report.json       │
+│  RunUAT BuildCookRun ──► pakchunk ──► <saved>/mods/<Мод>/<Мод>.pak   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -66,18 +74,83 @@ heartbeat, по которому `ww_game_status` отличает «игра з
 | | |
 |---|---|
 | `src/tools/` | по файлу на MCP-инструмент |
-| `src/scripts/` | BUILD-контур: `setup`, `dumps:pull`, `doctor`, `bridge:deploy`, память |
-| `src/utils/` | индекс, мост, песочница путей, отпечаток игры, работа с UE4SS |
+| `src/scripts/` | BUILD-контур: `setup`, `dumps:pull`, `doctor`, `bridge:deploy`, память, `job-runner` — отсоединяемый исполнитель долгих операций |
+| `src/utils/` | индекс, мост, песочница путей, отпечаток игры, работа с UE4SS, кит и Loom (`kit.ts`, `loom.ts`, `jobs.ts`, `loom-types.ts`; общий движок фолбэков подъёма — `lift-fallback.ts` и `lift-json.ts`) |
 | `bridge/` | Lua-моды: `WWBridge` (канал) и `AutoDump` (снятие дампов) |
 | `data/lib/ww/` | рантайм-библиотека модов, линкуется в `ue4ss/Mods/shared` |
-| `data/templates/` | шаблоны `ww_scaffold_mod` |
-| `sidecar/WwParse/` | C#-сайдкар на CUE4Parse: `data` — таблицы данных по `.usmap`, `xref` — статический xref (вызовы из `ScriptBytecode` + типизированные ссылки экспортов) |
+| `data/templates/` | шаблоны `ww_scaffold_mod`; `data/templates/loom/` — шаблоны `.lm`, сервер отдаёт их ресурсами `ww://templates/loom/<имя>` |
+| `sidecar/WwParse/` | C#-сайдкар на CUE4Parse: `data` — таблицы данных по `.usmap`, `xref` — статический xref (вызовы из `ScriptBytecode` + типизированные ссылки экспортов), `json` — экспорт cooked-пакета для `ww_lift`, `jsonbatch` — то же пакетом для шага `index-lift` |
 | `dumps/`, `dist/`, `state/` | не в гите: входы сборки, профили, рабочее состояние |
+
+## Группы инструментов
+
+Сервер отдаёт три вида поверхностей: инструменты, промпты и ресурсы. Каждая принадлежит группе
+из `src/toolsets.ts` (у промптов — `PROMPT_GROUPS` в `src/prompts.ts`), список включённых групп —
+в конфиге (`toolsets`), и регистрируется только то, чья группа включена:
+
+| Группа | Инструментов | Состав | Зачем |
+|---|---|---|---|
+| `recon` | 15 | разведка по индексу: `ww_find_symbol`, `ww_get_type`, `ww_get_function`, `ww_get_bytecode`, `ww_verify_hook`, `ww_find_callers`, `ww_lua_api`, ассеты и данные; промпт `ww:fix-after-patch` | нужна и Lua-, и Loom-модам |
+| `live` | 11 | всё, что требует запущенной игры: мост, скриншоты, трейс, вызовы, лог, краши | |
+| `lua` | 6 | `ww_scaffold_mod`, `ww_generate_hook`, `ww_validate_mod`, `ww_deploy_mod`, `ww_package_mod`, `ww_install_mod`; промпт `ww:new-mod` | в Loom-режиме выключается: pak-мод не перехватывает функции |
+| `memory` | 4 | проектная память | |
+| `loom` | 6 | `ww_lift`, `ww_event_surface`, `ww_loom_validate`, `ww_loom_build`, `ww_loom_install`, `ww_loom_status`; промпты `ww:new-loom-mod`, `ww:port-to-loom`; ресурсы — шаблоны `.lm` (`ww://templates/loom/<имя>`) | |
+
+Всего 42 инструмента и 4 промпта, без `lua` — 36 инструментов. Шаблоны `.lm` — ресурсы, а не
+инструмент: они читаются из `data/templates/loom/` при каждом `resources/read`. По умолчанию
+включены все группы, поэтому существующие настройки не меняются. Пример Loom-режима:
+`"toolsets": ["recon", "live", "memory", "loom"]`.
+
+## Кит и Loom
+
+Кит (`kitDir` в конфиге) — проект UE с плагином LoomEditor, в котором моды собираются в
+Blueprint'ы и пакуются в `.pak`. Пути выводятся в одном месте (`src/utils/kit.ts`):
+`loom.exe`, `UnrealEditor-Cmd.exe`, `UnrealPak.exe`, `RunUAT.bat`, `Intermediate/Loom/types.json`
+и `report.json`, лог редактора `Saved/Logs/Whiskerwood.log`. Движок ищется без конфига: GUID из
+`EngineAssociation` кита → реестр `HKCU\Software\Epic Games\Unreal Engine\Builds`; ключ
+`engineDir` — только ручной override. Без кита инструменты Loom отвечают `kit_not_configured`, а
+всё остальное работает как раньше.
+
+`types.json` — снимок того, что видит Blueprint в ките. Поэтому у функции в `ww_get_function`
+есть статус `bp`: `not_callable` (есть в типах, но Blueprint её не зовёт) и `not_in_types` (в
+типах нет: для игрового BP это значит «LoomBuild подгрузит его при сборке», а не «нельзя
+вызвать»). Сверка `types.json` с индексом живой игры — в `ww_loom_status`: если кит отстал от
+патча, Loom соберёт мод против старых сигнатур.
+
+**Подъём всей игры.** Шаг `index-lift` в `bun run setup` поднимает все игровые Blueprint в
+исходники Loom и кладёт их в `<профиль>/lift/`, а тексты функций — в FTS-таблицы
+`code_functions` / `code_fts`. Это даёт `ww_lift pattern=…` — поиск «где в игре делается Y»,
+а не только «что делает BP X». Шаг занимает около минуты, требует кита и не влияет на
+приёмочные проверки профиля: без кита он пропускается с пометкой в `profile_meta`. Таблицы
+создаются идемпотентно, поэтому профиль, собранный до появления шага, продолжает открываться
+— просто `pattern` ответит `no_code_index` до пересборки индекса.
+
+## Долгие операции
+
+Cook и headless-сборка длятся минуты и не переживают ни таймаут вызова, ни перезапуск сервера.
+Поэтому они идут джобами: сервер запускает отсоединённый `scripts/job-runner.ts`, тот пишет
+вывод в `state/jobs/<id>.log`, а статус, код возврата и время — в `state/jobs/<id>.json`.
+Джоб живёт своей жизнью, а инструмент владеет своими джобами и читает их по `job_id`:
+`ww_loom_build` — сборки (`build | status | cancel`), `ww_loom_install` — cook
+(`start | status | install | cancel`); чужой джоб инструмент не трогает и отсылает к владельцу.
+`status` только читает, копирование в `<saved>/mods` идёт отдельным `install`. `cancel` — это
+`taskkill /T /F` по раннеру и всему его дереву (RunUAT порождает AutomationTool и
+UnrealEditor-Cmd); раннер снимается первым, иначе он успел бы записать поверх отмены свой
+`failed`. Одновременно допускается один джоб на кит: две сборки одного проекта пишут в один
+`Intermediate`.
 
 ## Границы
 
-Сервер пишет только в песочницу: репозиторий модов, `state/` и `dist/`. Исключения два:
-`ww_extract_asset` с явным `dest_dir` и `ww_install_mod`, который ставит мод в
-`<ue4ssDir>/Mods/<Имя>` и правит `<ue4ssDir>/Mods/mods.txt` — больше никуда за пределы
-песочницы ни один инструмент не пишет. Сборку индекса модель запустить не может: среди
-инструментов нет и не будет триггера BUILD — это ручной шаг человека.
+Сервер пишет только в песочницу: репозиторий модов, `state/` и `dist/`. Исключения три:
+`ww_extract_asset` с явным `dest_dir`, `ww_install_mod`, который ставит Lua-мод в
+`<ue4ssDir>/Mods/<Имя>` и правит `<ue4ssDir>/Mods/mods.txt`, и `ww_loom_install`, который
+кладёт pak-мод в `<saved>/mods/<Мод>/` (отдельная песочница `savedModsSandbox`: только каталог
+текущего мода). Внутри песочницы появились зоны `state/lift/` (скретч-проекты Loom и кэш
+поднятых исходников), `state/jobs/` и `state/backup/` (предыдущие версии сборок).
+
+Отдельная категория — процессы, которые сервер запускает: LoomBuild и RunUAT пишут внутрь кита
+(`Content/Mods`, `Intermediate`, `Saved`, `Windows`). Сам сервер в `<kit>/Content` и
+`<kit>/Plugins` не пишет никогда.
+
+Сборку индекса модель запустить не может: среди инструментов нет и не будет триггера BUILD —
+это ручной шаг человека.

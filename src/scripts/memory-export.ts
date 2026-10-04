@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { ServerConfig } from '../config'
 import { repoRoot, requireConfig } from '../utils/cli-config'
+import { kitStatus } from '../utils/kit'
 import { MemoryRow, closeMemoryDb, memoryContentHash, openMemoryDb } from '../utils/memory-db'
 
 export const SEED_FIELDS = [
@@ -39,9 +40,13 @@ export interface SeedRecord {
 export function buildSanitizer(cfg: ServerConfig): (text: string) => string {
   const rules: Array<[RegExp, string]> = []
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const bothSlashes = (p: string) => new RegExp(esc(p).replace(/\//g, '[\\\\/]'), 'gi')
+  const bothSlashes = (p: string) =>
+    new RegExp(esc(p.replace(/\\/g, '/').replace(/\/+$/, '')).replace(/\//g, '[\\\\/]') + '(?![\\w-])', 'gi')
+  const kit = cfg.kitDir ? kitStatus(cfg).kit : null
 
   for (const [path, token] of [
+    [cfg.kitDir ?? '', '{kitDir}'],
+    [kit?.engineRoot ?? '', '{engineRoot}'],
     [cfg.modsRepo, '{modsRepo}'],
     [repoRoot(), '{mcpRepo}'],
     [cfg.gameDir, '{gameDir}'],

@@ -4,6 +4,8 @@ import { repoRoot } from '../utils/cli-config'
 import { getBridge } from '../utils/bridge-client'
 import { defaultSeedPath } from './memory-sync'
 import { sharedLibsRoot } from '../utils/ue4ss-deploy'
+import { findEditorProcess, kitStatus, savedModsDir } from '../utils/kit'
+import { loomDrift } from '../tools/loom-status'
 import { WHISKERWOOD_APP_ID, findSteamGame } from '../utils/steam-locate'
 
 type Level = 'ok' | 'warn' | 'fail'
@@ -195,6 +197,143 @@ function checkMemory(cfg: ServerConfig): void {
   else add('ok', `память на месте, в общей базе ${lines} записей`, 'обновить: git pull && bun run memory:sync')
 }
 
+function checkLoom(cfg: ServerConfig): void {
+  const st = kitStatus(cfg)
+  if (!st.configured) {
+    add(
+      'warn',
+      `кит Loom не настроен${st.problem ? `: ${st.problem}` : ''}`,
+      'Loom-инструменты ответят kit_not_configured, остальное работает как раньше',
+      'скилл /ww-setup: указать путь к киту (ключ kitDir)',
+    )
+    return
+  }
+  const kit = st.kit!
+  add('ok', `кит: ${kit.kitDir}`, `проект ${kit.projectName}.uproject`)
+  if (kit.engineDir) {
+    add(
+      'ok',
+      `движок: ${kit.engineDir}`,
+      kit.engineSource === 'registry' ? `найден по реестру, EngineAssociation ${kit.engineAssociation ?? '—'}` : 'задан ключом engineDir',
+    )
+  } else {
+    add('fail', 'движок не найден', 'EngineAssociation кита не разрешился и engineDir не задан', 'задайте engineDir в конфиге')
+  }
+
+  for (const [label, path, fix] of [
+    ['loom.exe', kit.loomExe, 'кит собран не полностью: нет плагина LoomEditor с бинарями'],
+  ] as Array<[string, string, string]>) {
+    if (existsSync(path)) add('ok', `${label}: ${path}`)
+    else add('fail', `нет ${label}: ${path}`, undefined, fix)
+  }
+
+  if (existsSync(kit.typesJson)) {
+    const stTypes = statSync(kit.typesJson)
+    add('ok', `types.json: ${Math.round(stTypes.size / 1048576)} МБ`, `обновлён ${fmtTime(stTypes.mtimeMs)}`)
+    if (existsSync(cfg.pakPath) && stTypes.mtimeMs < statSync(cfg.pakPath).mtimeMs) {
+      add('warn', 'types.json старше пака игры', 'кит мог отстать от патча: Loom соберёт мод против старых сигнатур', 'обновите кит и соберите Blueprint в редакторе, затем ww_loom_status')
+    }
+  } else {
+    add('warn', 'types.json ещё не создан', 'ни одна сборка Blueprint в редакторе не проходила', 'откройте кит в редакторе и соберите мод (LoomBuild)')
+  }
+
+  if (existsSync(kit.reportJson)) {
+    const rep = statSync(kit.reportJson)
+    const summary = readReportSummary(kit.reportJson)
+    add('ok', `report.json от ${fmtTime(rep.mtimeMs)}`, summary)
+    if (/failed=[1-9]/.test(summary)) {
+      add(
+        'warn',
+        "в последней сборке Loom есть failed Blueprint'ы",
+        summary,
+        'перед следующей сборкой удалите <kit>/Saved/Autosaves: недособранный Blueprint роняет следующий LoomBuild на assert FindObject<UBlueprint>',
+      )
+    }
+  } else {
+    add('warn', 'report.json отсутствует', 'сборок Blueprint ещё не было')
+  }
+
+  const opsBuild = readJsonOrNull(`${kit.opsDir}/build.json`) as { version?: string } | null
+  const uplugin = readJsonOrNull(`${kit.kitDir}/Plugins/LoomEditor/LoomEditor.uplugin`) as { VersionName?: string } | null
+  if (opsBuild?.version && uplugin?.VersionName) {
+    if (opsBuild.version !== uplugin.VersionName) {
+      add('fail', 'плагин LoomEditor и loom.exe разной версии', `плагин ${uplugin.VersionName}, ops собраны ${opsBuild.version}`, 'обновите кит целиком и пересоберите Blueprint в редакторе')
+    } else {
+      add('ok', `версия Loom: ${opsBuild.version}`, 'из ops/build.json и LoomEditor.uplugin')
+    }
+  } else if (!opsBuild) {
+    add('warn', 'версию Loom определить нечем', 'loom build ещё не проходил', 'соберите Blueprint в редакторе')
+  }
+
+  const drift = loomDrift(cfg)
+  if (drift.diff !== 'ok') {
+    add('warn', 'сверка types.json с индексом не выполнена', String(drift.diff_reason ?? ''))
+  } else {
+    const missInGame = Number(drift.kit_classes_missing_from_game ?? 0) + Number(drift.kit_functions_missing_from_game ?? 0)
+    if (missInGame > 0) {
+      add(
+        'fail',
+        `кит отстал от патча игры: ${missInGame} сущностей есть в ките, но нет в игре`,
+        `${drift.kit_classes_missing_from_game} классов, ${drift.kit_functions_missing_from_game} функций`,
+        'обновите кит до текущего патча: стабы едут из патча кита, в редакторе их не пересобрать',
+      )
+    } else if (Number(drift.functions_params_differ ?? 0) > 0) {
+      add('warn', `параметры разошлись у ${drift.functions_params_differ} функций кита`, `${drift.game_module_functions} сверено`)
+    } else {
+      add(
+        'ok',
+        `types.json сходится с игрой: ${drift.game_module_classes} классов и ${drift.game_module_functions} функций своих модулей`,
+        `BlueprintCallable вне кита: ${drift.bp_callable_missing_from_kit} — Loom их не видит, поломкой не является`,
+      )
+    }
+    if (drift.uht_modules_absent) {
+      add('warn', 'UHT-дампов игровых модулей нет: сверка BlueprintCallable пропущена', String(drift.uht_modules_absent), 'ww_capture_dumps → bun run dumps:pull')
+    }
+  }
+
+  const editor = findEditorProcess(kit.uproject)
+  if (editor) add('ok', `редактор открыт с этим .uproject (pid ${editor.pid})`, 'сборка пойдёт через DirectoryWatcher, headless не нужен')
+  else add('ok', 'редактор закрыт', 'headless-сборка возможна: UnrealEditor-Cmd -run=LoomBuild')
+
+  if (existsSync(kit.gameInstallTxt)) {
+    const text = readFileSync(kit.gameInstallTxt, 'utf8')
+    const line = text.split(/\r?\n/).find((l) => l.trim().length > 0 && !l.startsWith(';'))?.trim() ?? ''
+    const kitGame = line.replace(/[\\/]Whiskerwood$/, '').replace(/\\/g, '/').toLowerCase()
+    if (kitGame.length === 0) add('warn', 'GameInstallDirectory.txt пуст')
+    else if (kitGame !== cfg.gameDir.toLowerCase()) {
+      add('warn', 'кит смотрит на другую установку игры', `кит: ${line}`, `конфиг: ${cfg.gameDir}`)
+    } else add('ok', 'кит и конфиг смотрят на одну установку игры')
+  }
+
+  const mods = existsSync(kit.contentMods) ? readdirSync(kit.contentMods).filter((d) => statSync(`${kit.contentMods}/${d}`).isDirectory()) : []
+  add('ok', `модов в ките: ${mods.length}`, mods.slice(0, 12).join(', '))
+  add('ok', `пак мода кладётся в ${savedModsDir(cfg)}`, 'загрузка pak-мода — только при старте игры')
+}
+
+function readJsonOrNull(path: string): unknown | null {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')) as unknown
+  } catch {
+    return null
+  }
+}
+
+function readReportSummary(path: string): string {
+  try {
+    const rep = JSON.parse(readFileSync(path, 'utf8')) as {
+      ok?: boolean
+      errors?: unknown[]
+      blueprints?: Array<{ status?: string }>
+    }
+    const bps = rep.blueprints ?? []
+    const failed = bps.filter((b) => b.status === 'failed').length
+    const built = bps.filter((b) => b.status === 'built').length
+    return `ok=${rep.ok ?? '?'}, built=${built}, failed=${failed}, errors=${(rep.errors ?? []).length}`
+  } catch (e) {
+    return `не разобран: ${(e as Error).message}`
+  }
+}
+
 async function main(): Promise<void> {
   console.log('Проверка стенда Whiskerwood MCP\n')
   checkToolchain()
@@ -214,6 +353,7 @@ async function main(): Promise<void> {
     checkUe4ss(cfg)
     checkDumps(cfg)
     checkProfile(cfg)
+    checkLoom(cfg)
     checkMemory(cfg)
     await checkBridge(cfg)
   }

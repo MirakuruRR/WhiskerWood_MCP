@@ -20,5 +20,14 @@
   "bridgePollMs": 120,
   "bridgeTimeoutMs": 5000,
   "saveDir": "%LOCALAPPDATA%/Whiskerwood/Saved/saves_player",
+  "kitDir": "",
+  "engineDir": "",
+  "toolsets": [
+    "recon",
+    "live",
+    "lua",
+    "memory",
+    "loom"
+  ],
   "steamAppId": "2489330"
 }

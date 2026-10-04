@@ -60,12 +60,16 @@ function run(cmd: string[], cwd?: string): { code: number; stderr: string } {
   return { code: proc.exitCode ?? -1, stderr: new TextDecoder().decode(proc.stderr) }
 }
 
+export function sidecarExePath(cfg: ServerConfig): string {
+  return `${sidecarDir(cfg)}/bin/Release/net10.0/WwParse.exe`
+}
+
 export function buildSidecar(cfg: ServerConfig): string {
   const dir = sidecarDir(cfg)
   if (!existsSync(`${dir}/WwParse.csproj`)) {
     throw new SidecarError(`сайдкар не найден: ${dir}/WwParse.csproj`)
   }
-  const exe = `${dir}/bin/Release/net10.0/WwParse.exe`
+  const exe = sidecarExePath(cfg)
   const build = run(['dotnet', 'build', dir, '-c', 'Release', '--nologo', '-v', 'quiet'])
   if (build.code !== 0) {
     throw new SidecarError(

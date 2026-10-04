@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { basename, dirname } from 'node:path'
 import { ServerConfig } from '../config'
 import { BridgeClient } from './bridge-client'
+import { modlogPath } from './kit'
 import { isLevelLoaded } from '../tools/bridge-common'
 
 export interface ProcInfo {
@@ -17,6 +18,7 @@ export interface ProcessState {
   stopRequestedAt?: number
   save?: string
   logArchive?: string
+  modlogOffset?: number
 }
 
 export type WaitTarget = 'none' | 'process' | 'bridge' | 'menu' | 'world'
@@ -152,6 +154,15 @@ function statePath(config: ServerConfig): string {
   return `${config.stateDir}/game-process.json`
 }
 
+// modlog принадлежит игре и только растёт: сессию отрезает офсет, снятый до старта
+export function modlogSize(config: ServerConfig): number {
+  try {
+    return statSync(modlogPath(config)).size
+  } catch {
+    return 0
+  }
+}
+
 export function readState(config: ServerConfig): ProcessState {
   try {
     return JSON.parse(readFileSync(statePath(config), 'utf8')) as ProcessState
@@ -169,17 +180,32 @@ export function writeState(config: ServerConfig, patch: ProcessState): ProcessSt
   return next
 }
 
+/** Каталог UE-краша (UECC-*): CrashContext.runtime-xml и/или минидамп. Служебные папки вроде wwguard сюда не попадают. */
+function isUeCrashDir(dir: string): boolean {
+  try {
+    return readdirSync(dir).some((f) => f === 'CrashContext.runtime-xml' || f.toLowerCase().endsWith('.dmp'))
+  } catch {
+    return false
+  }
+}
+
 export function lastCrashDump(config: ServerConfig, sinceMs: number): { path: string; at: string } | null {
   const dir = `${dirname(config.saveDir)}/Crashes`
   let best: { path: string; at: number } | null = null
+  let names: string[]
   try {
-    for (const f of readdirSync(dir)) {
-      const full = `${dir}/${f}`
-      const m = statSync(full).mtimeMs
-      if (m >= sinceMs && (!best || m > best.at)) best = { path: full, at: m }
-    }
+    names = readdirSync(dir)
   } catch {
     return null
+  }
+  for (const f of names) {
+    const full = `${dir}/${f}`
+    try {
+      const st = statSync(full)
+      if (!st.isDirectory() || st.mtimeMs < sinceMs || (best && st.mtimeMs <= best.at)) continue
+      if (!isUeCrashDir(full)) continue
+      best = { path: full, at: st.mtimeMs }
+    } catch {}
   }
   return best ? { path: best.path, at: new Date(best.at).toISOString() } : null
 }

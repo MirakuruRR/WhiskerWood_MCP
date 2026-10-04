@@ -2,6 +2,7 @@ import { ServerConfig } from '../config'
 import { GameContext } from '../utils/game-context'
 import { BridgeResult, getBridge } from '../utils/bridge-client'
 import { renderAiText, Scalar } from '../utils/ai-text'
+import { isModAssetInput, modPathHint, modSignature, ModAssetRef, parseModAssetPath, probeModPaths } from '../utils/mod-asset'
 import { bridgeFailureFields, echoFields } from './bridge-common'
 import { findObject, isHookable, luaLocal, luaStr } from './common'
 
@@ -25,6 +26,14 @@ const DEGRADE_THRESHOLD_PER_S = 200
 interface ResolvedTarget {
   hookPath: string
   params: Array<{ name: string }>
+  modSource?: string
+}
+
+interface ModFailure {
+  path: string
+  status: string
+  detail: string
+  extra: Scalar | null
 }
 
 function resolveTargets(ctx: GameContext, paths: string[]): { resolved: ResolvedTarget[]; unknown: string[] } {
@@ -42,6 +51,68 @@ function resolveTargets(ctx: GameContext, paths: string[]): { resolved: Resolved
     resolved.push({ hookPath: obj.hook_path, params })
   }
   return { resolved, unknown }
+}
+
+interface ModResolveResult {
+  targets: ResolvedTarget[]
+  failures: ModFailure[]
+  bridge?: Exclude<BridgeResult, { status: 'ok' }>
+}
+
+/** Сигнатуру функции мода индекс не знает: она берётся из пака мода, а путь проверяется живьём. */
+async function resolveModTargets(config: ServerConfig, paths: string[]): Promise<ModResolveResult> {
+  const targets: ResolvedTarget[] = []
+  const failures: ModFailure[] = []
+  const signatures: Array<{ ref: ModAssetRef; hookPath: string; params: Array<{ name: string }>; source: string }> = []
+
+  for (const p of paths) {
+    const ref = parseModAssetPath(p)
+    if (!ref) {
+      failures.push({ path: p, status: 'mod_path_incomplete', detail: 'путь мода разобран не полностью', extra: modPathHint() })
+      continue
+    }
+    if (!ref.functionName) {
+      failures.push({ path: p, status: 'function_required', detail: 'в пути функции мода не указано имя функции', extra: modPathHint() })
+      continue
+    }
+    const sig = modSignature(config, ref)
+    if (!sig.ok) {
+      failures.push({
+        path: p,
+        status: sig.status,
+        detail: sig.detail,
+        extra: sig.error ? `${sig.error}; искали: ${sig.searched}` : `искали: ${sig.searched}`,
+      })
+      continue
+    }
+    const params = sig.signature.params.filter((x) => x.is_return !== 1).slice(0, MAX_CAPTURED_PARAMS).map((x) => ({ name: x.name }))
+    signatures.push({ ref, hookPath: sig.signature.functionPath, params, source: sig.signature.source })
+  }
+
+  if (signatures.length > 0) {
+    const probe = await probeModPaths(
+      config,
+      signatures.map((s) => s.hookPath),
+    )
+    if (!probe.ok) return { targets, failures, bridge: probe.result }
+    for (const s of signatures) {
+      const live = probe.probes.get(s.hookPath)
+      if (!live || !live.found) {
+        failures.push({
+          path: s.hookPath,
+          status: 'mod_function_not_loaded',
+          detail:
+            live?.via === 'class_only'
+              ? 'класс мода есть в памяти, а функции с таким именем нет: пак устарел'
+              : 'класса мода нет в памяти: pak подхватывается только при старте игры',
+          extra: 'ww_game_process action=restart save=…',
+        })
+        continue
+      }
+      targets.push({ hookPath: s.hookPath, params: s.params, modSource: s.source })
+    }
+  }
+  return { targets, failures }
 }
 
 // Коллбэк собирается под конкретную функцию: арность и имена параметров — из function_params,
@@ -182,7 +253,10 @@ export async function handleTraceCalls(ctx: GameContext, config: ServerConfig, a
     })
   }
 
-  const { resolved, unknown } = resolveTargets(ctx, paths)
+  const modPaths = paths.filter((p) => isModAssetInput(p))
+  const indexPaths = paths.filter((p) => !isModAssetInput(p))
+
+  const { resolved, unknown } = resolveTargets(ctx, indexPaths)
   if (unknown.length > 0) {
     return renderAiText({
       reportType: 'trace_calls',
@@ -195,10 +269,48 @@ export async function handleTraceCalls(ctx: GameContext, config: ServerConfig, a
     })
   }
 
+  const modResult = await resolveModTargets(config, modPaths)
+  if (modResult.bridge) {
+    if (modResult.bridge.status === 'error') {
+      return renderAiText({
+        reportType: 'trace_calls',
+        fields: { ...fields, status: 'lua_error', stage: 'mod_probe' },
+        results: [{ fields: {}, blocks: { error: modResult.bridge.body } }],
+      })
+    }
+    return renderAiText({ reportType: 'trace_calls', fields: { ...fields, ...bridgeFailureFields(modResult.bridge) } })
+  }
+  if (modResult.failures.length > 0) {
+    const first = modResult.failures[0]
+    return renderAiText({
+      reportType: 'trace_calls',
+      fields: {
+        ...fields,
+        status: first.status,
+        mod_failed: modResult.failures.map((f) => `${f.path} — ${f.detail}${f.extra ? ` (${f.extra})` : ''}`).join('; '),
+        hint: 'функция BP-мода ищется по полному пути, сигнатура берётся из пака мода: короткое имя неоднозначно',
+      },
+    })
+  }
+
+  const targets = [...resolved, ...modResult.targets]
+  if (targets.length === 0) {
+    return renderAiText({
+      reportType: 'trace_calls',
+      fields: { ...fields, status: 'paths_required', hint: 'ни одного хука ставить не на что' },
+    })
+  }
+  const modSource = modResult.targets.find((t) => t.modSource)?.modSource
+  if (modSource) {
+    fields.mod_signature = modSource
+    fields.mod_paths = modResult.targets.length
+    fields.mod_hook_note = 'BP-функция: UE4SS зовёт только pre-хук, счётчик и сэмплы идут по нему'
+  }
+
   const maxSamples = Math.min(Math.max(args.max_samples ?? DEFAULT_MAX_SAMPLES, 1), HARD_MAX_SAMPLES)
   const captureArgs = args.capture_args === true
 
-  const started = await bridge.call('eval', startChunk(resolved, captureArgs, maxSamples), 15_000)
+  const started = await bridge.call('eval', startChunk(targets, captureArgs, maxSamples), 15_000)
   if (started.status === 'error') {
     return renderAiText({
       reportType: 'trace_calls',

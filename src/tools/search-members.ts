@@ -1,10 +1,13 @@
+import { ServerConfig } from '../config'
 import { GameContext, versionEchoFields } from '../utils/game-context'
 import { renderAiText, MAX_RESULTS } from '../utils/ai-text'
+import { bpField, bpFieldVisible, bpFunction, bpFunctionVisible, bpUnavailableHint } from '../utils/loom-types'
 
 export interface SearchMembersArgs {
   pattern: string
   member_kind?: 'field' | 'method' | 'any'
   limit?: number
+  bp_only?: boolean
 }
 
 interface MemberHit {
@@ -14,9 +17,10 @@ interface MemberHit {
   detail: string | null
 }
 
-export function handleSearchMembers(ctx: GameContext, args: SearchMembersArgs): string {
+export function handleSearchMembers(ctx: GameContext, config: ServerConfig, args: SearchMembersArgs): string {
   const memberKind = args.member_kind ?? 'any'
   const limit = Math.min(Math.max(args.limit ?? 20, 1), MAX_RESULTS)
+  const fetchLimit = args.bp_only ? MAX_RESULTS : limit
   const escaped = args.pattern.replace(/\\/g, '\\\\').replace(/_/g, '\\_')
   const like = args.pattern.includes('%') ? escaped : `%${escaped}%`
 
@@ -31,13 +35,13 @@ export function handleSearchMembers(ctx: GameContext, args: SearchMembersArgs): 
          ORDER BY owner_path
          LIMIT ?`,
       )
-      .all(like, limit) as Array<{ owner_path: string; name: string; prop_kind: string; type_name: string | null }>
+      .all(like, fetchLimit) as Array<{ owner_path: string; name: string; prop_kind: string; type_name: string | null }>
     for (const r of rows) {
       hits.push({ owner_path: r.owner_path, member_kind: 'field', name: r.name, detail: r.type_name ?? 'unknown' })
     }
   }
 
-  if (hits.length < limit && (memberKind === 'method' || memberKind === 'any')) {
+  if (hits.length < fetchLimit && (memberKind === 'method' || memberKind === 'any')) {
     const rows = ctx.db
       .query(
         `SELECT outer_path, name FROM objects
@@ -45,12 +49,27 @@ export function handleSearchMembers(ctx: GameContext, args: SearchMembersArgs): 
          ORDER BY outer_path
          LIMIT ?`,
       )
-      .all(like, limit - hits.length) as Array<{ outer_path: string | null; name: string }>
+      .all(like, fetchLimit - hits.length) as Array<{ outer_path: string | null; name: string }>
     for (const r of rows) {
       if (!r.outer_path) continue
       hits.push({ owner_path: r.outer_path, member_kind: 'method', name: r.name, detail: null })
     }
   }
+
+  const hint = bpUnavailableHint(config)
+  const bpOf = (h: MemberHit): { status: string | null; visible: boolean } => {
+    if (hint) return { status: null, visible: true }
+    if (h.member_kind === 'field') {
+      const info = bpField(ctx, config, h.owner_path, h.name)
+      return info ? { status: info.status, visible: bpFieldVisible(info.status) } : { status: null, visible: true }
+    }
+    const info = bpFunction(ctx, config, h.owner_path, h.name)
+    return info ? { status: info.status, visible: bpFunctionVisible(info.status) } : { status: null, visible: true }
+  }
+
+  const all = hits.map((h) => ({ hit: h, bp: bpOf(h) }))
+  const kept = args.bp_only ? all.filter((x) => x.bp.visible) : all
+  const rows = kept.slice(0, limit)
 
   return renderAiText({
     reportType: 'member_search',
@@ -58,15 +77,18 @@ export function handleSearchMembers(ctx: GameContext, args: SearchMembersArgs): 
       ...versionEchoFields(ctx),
       query: args.pattern,
       member_kind: memberKind,
-      truncated: hits.length >= limit,
+      truncated: hits.length >= fetchLimit,
       limit,
+      ...(args.bp_only ? { bp_only: true, bp_filtered: all.length - kept.length } : {}),
+      ...(hint ? { bp_hint: hint } : {}),
     },
-    results: hits.map((h) => ({
+    results: rows.map(({ hit: h, bp }) => ({
       fields: {
         owner_path: h.owner_path,
         member_kind: h.member_kind,
         name: h.name,
         ...(h.detail ? { type: h.detail } : {}),
+        ...(bp.status ? { bp: bp.status } : {}),
       },
     })),
   })

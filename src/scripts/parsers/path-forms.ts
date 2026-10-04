@@ -3,12 +3,26 @@ export interface NormalizedPath {
   gameFullPath: string | null
   hadColon: boolean
   fromMount: boolean
+  assetPath: string | null
+  isModPath: boolean
 }
 
 function splitClassFunc(s: string): [string, string | null] {
   const i = s.lastIndexOf(':')
   if (i < 0) return [s, null]
   return [s.slice(0, i), s.slice(i + 1)]
+}
+
+/** `/Game/UI/BP_PlayHud.BP_PlayHud_C` + опциональная функция → путь ассета `/Game/UI/BP_PlayHud`. */
+export function assetPathOf(gameFullPath: string): string | null {
+  const [classPart] = splitClassFunc(gameFullPath)
+  if (!classPart.startsWith('/')) return null
+  const dot = classPart.lastIndexOf('.')
+  return dot < 0 ? classPart : classPart.slice(0, dot)
+}
+
+export function isModAssetPath(path: string): boolean {
+  return path.startsWith('/Game/Mods/') || path.startsWith('/Game/Mods\\')
 }
 
 export function normalizeDumpPath(rawPath: string): NormalizedPath {
@@ -21,6 +35,8 @@ export function normalizeDumpPath(rawPath: string): NormalizedPath {
       gameFullPath: null,
       hadColon: func !== null,
       fromMount: false,
+      assetPath: null,
+      isModPath: false,
     }
   }
 
@@ -34,10 +50,19 @@ export function normalizeDumpPath(rawPath: string): NormalizedPath {
       gameFullPath: func ? `${fullClass}:${func}` : fullClass,
       hadColon: func !== null,
       fromMount: true,
+      assetPath: assetPathOf(fullClass),
+      isModPath: isModAssetPath(fullClass),
     }
   }
 
-  return { indexPath: classPart, gameFullPath: null, hadColon: func !== null, fromMount: false }
+  return {
+    indexPath: classPart,
+    gameFullPath: null,
+    hadColon: func !== null,
+    fromMount: false,
+    assetPath: null,
+    isModPath: false,
+  }
 }
 
 export function normalizeUserPath(input: string): NormalizedPath {
@@ -49,6 +74,8 @@ export function normalizeUserPath(input: string): NormalizedPath {
     gameFullPath: null,
     hadColon: func !== null,
     fromMount: false,
+    assetPath: null,
+    isModPath: false,
   }
 }
 

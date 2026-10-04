@@ -13,6 +13,7 @@ import {
   lastCrashDump,
   launchViaSteam,
   listSaves,
+  modlogSize,
   ProcessState,
   ProcInfo,
   readState,
@@ -142,6 +143,8 @@ async function doStart(
   const archive = rotateLog(config)
   fields.log_rotated = archive.length > 0
   if (archive) fields.log_archive = archive
+  const modlogOffset = modlogSize(config)
+  fields.modlog_offset = modlogOffset
   fields.steam_running = isSteamRunning()
   fields.steam_app_id = resolveAppId(config) || 'unknown'
 
@@ -154,7 +157,13 @@ async function doStart(
   }
   fields.launch_url = launch.url
   if (launchArgs.length > 0) fields.launch_args = launchArgs.join(' ')
-  writeState(config, { launchedAt: Date.now(), stopRequestedAt: undefined, save: save ?? undefined, logArchive: archive })
+  writeState(config, {
+    launchedAt: Date.now(),
+    stopRequestedAt: undefined,
+    save: save ?? undefined,
+    logArchive: archive,
+    modlogOffset,
+  })
   if (!fields.steam_running) fields.hint = 'Steam не был запущен: старт займёт дольше, возможен экран логина'
 
   const timeout = Math.min(args.timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
@@ -232,6 +241,7 @@ export async function handleGameProcess(
   if (action === 'status') {
     const proc = findGameProcess(config)
     const state = readState(config)
+    if (typeof state.modlogOffset === 'number') fields.modlog_offset = state.modlogOffset
     if (proc) {
       fields.status = 'running'
       Object.assign(fields, procFields(proc), await bridgeFields(config))
