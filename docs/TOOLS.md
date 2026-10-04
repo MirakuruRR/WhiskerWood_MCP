@@ -27,8 +27,8 @@ ww_resolve_loc   → ww_get_datatable     тексты и числа
 ww_lua_api                              грабли UE4SS по нужному механизму
 ww_verify_hook                          ВСЕ пути будущего мода одним вызовом
 ww_scaffold_mod  → ww_generate_hook     каркас и код хуков
-ww_validate_mod                         до нуля ошибок
 ww_deploy_mod    → ww_game_log          живая проверка
+ww_validate_mod                         перед сдачей, до нуля ошибок
 ww_memory_add                           записать то, что нельзя вывести из кода
 ww_package_mod   → ww_install_mod       релизный zip → поставить его в игру
 ```
@@ -126,7 +126,7 @@ ww_game_log source=modlog / ww_ui_tree   сработало ли, что на э
 |---|---|
 | `ww_scaffold_mod` | Каркас мода: `mod.json`, `Scripts/main.lua` из шаблона (hook / ui / keybind / diagnostic) |
 | `ww_generate_hook` | Готовый `RegisterHook` с реальной сигнатурой и распаковкой каждого параметра |
-| `ww_validate_mod` | Разбирает `.lua` в AST и сверяет каждый литеральный путь с индексом; у мода с DLL проверяет и её |
+| `ww_validate_mod` | Разбирает `.lua` из `Scripts/` в AST и сверяет каждый путь (литерал или строковую константу) с индексом; у мода с DLL проверяет и её. Зовётся перед сдачей; находки одного кода сворачиваются, грабли из памяти идут отдельным блоком `memory_hints`. Принятое гасится `-- ww:ignore <code\|pit-id>`, `-- ww:ignore-file …` или `validate_ignore` в `mod.json`; повторный прогон — `since_last: true` |
 | `ww_deploy_mod` | Dev-деплой: Lua — горячо через мост, со снятием прошлых хуков; DLL — подмена в каталоге игры (живой) |
 | `ww_package_mod` | Релизный zip: библиотека вендорится внутрь, чтобы мод работал у игрока без этого репозитория |
 | `ww_install_mod` | Ставит релиз в `<ue4ssDir>/Mods/<Имя>` из каталога или zip, с бэкапом прошлой версии и правкой mods.txt |
@@ -159,9 +159,10 @@ dll_only: true`. Релизная раскладка (`ww_install_mod` без ф
 `WWBridge` — иначе мостовая загрузка их не увидит.
 
 ```
-правка Lua  → ww_validate_mod → ww_deploy_mod                         горячо
-правка C++  → сборка native/  → ww_validate_mod (dll_stale) → ww_deploy_mod
+правка Lua  → ww_deploy_mod                                           горячо
+правка C++  → сборка native/  → ww_deploy_mod
             → restart_required → ww_game_process action=restart → ww_deploy_mod
+перед сдачей → ww_validate_mod (в том числе dll_stale)
 ```
 
 `ww_validate_mod` и `ww_deploy_mod` сверяют таблицу импорта DLL с экспортом установленной

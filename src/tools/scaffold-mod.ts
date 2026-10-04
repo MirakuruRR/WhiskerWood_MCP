@@ -51,7 +51,7 @@ export function handleScaffoldMod(ctx: GameContext, config: ServerConfig, args: 
       mod_root: root,
       name: existing.name,
       template: existing.template,
-      hint: 'мод уже создан; правь Scripts/main.lua напрямую и проверяй через ww_validate_mod',
+      hint: 'мод уже создан; правь Scripts/main.lua напрямую, проверяй через ww_deploy_mod, перед сдачей — ww_validate_mod',
     })
   }
 
@@ -91,7 +91,7 @@ export function handleScaffoldMod(ctx: GameContext, config: ServerConfig, args: 
       entry: entryPath,
       manifest: `${root}/${MOD_MANIFEST}`,
       lib_path: sharedLibsRoot(config.configDir, config.modsRepo) ?? 'не найдена — выполните bun run bridge:deploy',
-      next: 'ww_find_symbol/ww_get_function → ww_verify_hook → ww_generate_hook → правка main.lua → ww_validate_mod → ww_deploy_mod',
+      next: 'ww_find_symbol/ww_get_function → ww_verify_hook → ww_generate_hook → правка main.lua → ww_deploy_mod → ww_validate_mod перед сдачей',
     },
   })
 }

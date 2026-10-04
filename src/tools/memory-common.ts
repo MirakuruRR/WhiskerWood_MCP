@@ -95,6 +95,7 @@ export interface PitfallHint {
   public_id: string
   summary: string
   tokens: string[]
+  tags: string[]
   mod_name: string | null
 }
 
@@ -116,9 +117,10 @@ export function activePitfalls(config: ServerConfig, modName: string | null): Pi
   const out: PitfallHint[] = []
   for (const r of rows) {
     if (r.mod_name && modName && r.mod_name !== modName) continue
-    const tokens = splitTags(r.tags).filter((t) => t.length >= 4 && /^[A-Za-z_][\w.:]*$/.test(t))
+    const tags = splitTags(r.tags)
+    const tokens = tags.filter((t) => t.length >= 4 && /^[A-Za-z_][\w.:]*$/.test(t))
     if (tokens.length === 0) continue
-    out.push({ public_id: r.public_id, summary: oneLine(r.summary), tokens, mod_name: r.mod_name })
+    out.push({ public_id: r.public_id, summary: oneLine(r.summary), tokens, tags, mod_name: r.mod_name })
   }
   return out
 }

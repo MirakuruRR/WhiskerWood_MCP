@@ -85,7 +85,7 @@ export function handleMemoryAdd(config: ServerConfig, args: MemoryAddArgs): stri
       added,
       updated,
       active_total: active,
-      hint: 'запись с category=pitfall и тегами-символами попадёт в линт ww_validate_mod: тег, встреченный в коде мода, поднимет предупреждение',
+      hint: 'запись с category=pitfall и тегом-символом кода (FindAllOf, ww.hook, HarvestingCamp) попадёт в memory_hints ww_validate_mod, когда этот символ встретится в коде мода; обычные слова-теги триггерами не считаются',
     },
     results,
   })

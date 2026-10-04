@@ -16,6 +16,8 @@ export interface ModMeta {
   game_version: string
   description?: string
   version?: string
+  /** коды находок и public_id граблей, которые ww_validate_mod гасит во всём моде */
+  validate_ignore?: string[]
 }
 
 export interface ModProject {
@@ -52,12 +54,14 @@ export function readModMeta(root: string): ModMeta | null {
       game_version: typeof raw.game_version === 'string' ? raw.game_version : 'unknown',
       ...(typeof raw.description === 'string' ? { description: raw.description } : {}),
       ...(typeof raw.version === 'string' ? { version: raw.version } : {}),
+      ...(Array.isArray(raw.validate_ignore) ? { validate_ignore: raw.validate_ignore.map(String) } : {}),
     }
   } catch {
     return null
   }
 }
 
+/** UE4SS грузит только Scripts/: остальные .lua мода (сохранённое состояние и т.п.) исходниками не считаются. */
 export function listLuaFiles(root: string): string[] {
   const out: string[] = []
   const walk = (dir: string, depth: number): void => {
@@ -81,7 +85,7 @@ export function listLuaFiles(root: string): string[] {
       else if (name.endsWith('.lua')) out.push(norm(full))
     }
   }
-  walk(root, 0)
+  walk(`${norm(root)}/Scripts`, 0)
   return out.sort()
 }
 

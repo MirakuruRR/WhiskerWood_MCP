@@ -7,7 +7,6 @@ export const VERIFIABLE = new Set([
   'FindFirstOf',
   'FindAllOf',
   'NotifyOnNewObject',
-  'StaticConstructObject',
 ])
 
 const HOOK_REGISTER = new Set(['RegisterHook', 'WWRegisterHook'])
@@ -50,6 +49,8 @@ export interface Reference {
   fn: string
   /** null = путь собран динамически, верификации не подлежит */
   arg: string | null
+  /** путь взят не из литерала, а из строковой константы */
+  viaConstant: boolean
   line: number
   column: number
   callbacks: Callback[]
@@ -65,10 +66,16 @@ export interface Lint {
   message: string
 }
 
-export interface CommentSpan {
+export interface SymbolSite {
   line: number
-  from: number
-  to: number
+  column: number
+}
+
+/** `-- ww:ignore <code|pit-id>...` гасит находки на своей и следующей строке, `ww:ignore-file` — во всём файле. */
+export interface IgnoreDirective {
+  line: number
+  file: boolean
+  ids: string[]
 }
 
 export interface ObjectWrite {
@@ -84,7 +91,11 @@ export interface ObjectWrite {
 
 export interface Analysis {
   syntaxError?: { message: string; line: number; column: number }
-  comments: CommentSpan[]
+  ignores: IgnoreDirective[]
+  /** идентификаторы, цепочки полей и куски строк вне комментариев — по ним срабатывают грабли из памяти */
+  symbols: Map<string, SymbolSite[]>
+  /** строковые константы таблицы, которую возвращает модуль: M.CLASS = "X" даёт CLASS */
+  exports: Map<string, string>
   refs: Reference[]
   lints: Lint[]
   writes: ObjectWrite[]
@@ -271,14 +282,161 @@ function collectAliases(ast: any): { aliases: Map<string, string>; modules: Map<
   return { aliases, modules }
 }
 
-export function analyzeLua(source: string): Analysis {
+type Constants = Map<string, string | null>
+
+function constantKey(node: any): string | null {
+  if (node?.type === 'Identifier') return node.name
+  if (node?.type === 'MemberExpression' && node.indexer === '.' && node.base?.type === 'Identifier') {
+    return `${node.base.name}.${node.identifier.name}`
+  }
+  return null
+}
+
+function constValue(node: any, consts: Constants, modules: Map<string, string>, externals: ReadonlyMap<string, string>): string | null {
+  if (!node) return null
+  if (node.type === 'StringLiteral') return luaStringValue(node.raw)
+  if (node.type === 'BinaryExpression' && node.operator === '..') {
+    const left = constValue(node.left, consts, modules, externals)
+    const right = left === null ? null : constValue(node.right, consts, modules, externals)
+    return left !== null && right !== null ? left + right : null
+  }
+  const key = constantKey(node)
+  if (!key) return null
+  const local = consts.get(key)
+  if (local !== undefined) return local
+  if (node.type === 'MemberExpression') {
+    const module = modules.get(node.base.name)
+    if (module) return externals.get(`${module}.${node.identifier.name}`) ?? null
+  }
+  return null
+}
+
+/** Имя, которому хоть раз присвоено нестроковое или другое значение, константой не считается. */
+function collectConstants(ast: any, modules: Map<string, string>, externals: ReadonlyMap<string, string>): Constants {
+  const consts: Constants = new Map()
+  const assign = (key: string, value: string | null): void => {
+    const prev = consts.get(key)
+    consts.set(key, prev === undefined || prev === value ? value : null)
+  }
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object') return
+    if (node.type === 'LocalStatement' || node.type === 'AssignmentStatement') {
+      const vars: any[] = node.variables ?? []
+      const inits: any[] = node.init ?? []
+      for (let i = 0; i < vars.length; i++) {
+        const key = constantKey(vars[i])
+        if (!key) continue
+        const init = inits[i]
+        assign(key, constValue(init, consts, modules, externals))
+        if (init?.type === 'TableConstructorExpression' && vars[i].type === 'Identifier') {
+          for (const f of init.fields ?? []) {
+            if (f.type === 'TableKeyString') assign(`${key}.${f.key.name}`, constValue(f.value, consts, modules, externals))
+          }
+        }
+      }
+    }
+    if (node.type === 'FunctionDeclaration') {
+      for (const p of node.parameters ?? []) if (p.type === 'Identifier') assign(p.name, null)
+    }
+    if (node.type === 'ForGenericStatement' || node.type === 'ForNumericStatement') {
+      const vars: any[] = node.variables ?? (node.variable ? [node.variable] : [])
+      for (const v of vars) if (v?.type === 'Identifier') assign(v.name, null)
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'loc' || key === 'range') continue
+      const v = node[key]
+      if (Array.isArray(v)) v.forEach(visit)
+      else visit(v)
+    }
+  }
+  visit(ast)
+  return consts
+}
+
+function moduleExports(ast: any, consts: Constants): Map<string, string> {
+  const out = new Map<string, string>()
+  const ret = (ast.body ?? []).findLast((s: any) => s.type === 'ReturnStatement')
+  const name = ret?.arguments?.[0]?.type === 'Identifier' ? ret.arguments[0].name : null
+  if (!name) return out
+  for (const [key, value] of consts) {
+    if (value !== null && key.startsWith(`${name}.`)) out.set(key.slice(name.length + 1), value)
+  }
+  return out
+}
+
+const SYMBOL_SITES_PER_FILE = 3
+
+function memberChain(node: any): Array<{ name: string; sep: string }> | null {
+  if (node?.type === 'Identifier') return [{ name: node.name, sep: '' }]
+  if (node?.type === 'MemberExpression' && node.identifier?.type === 'Identifier') {
+    const base = memberChain(node.base)
+    return base ? [...base, { name: node.identifier.name, sep: node.indexer }] : null
+  }
+  return null
+}
+
+function collectSymbols(ast: any): Map<string, SymbolSite[]> {
+  const out = new Map<string, SymbolSite[]>()
+  const add = (token: string, node: any): void => {
+    if (token.length === 0) return
+    const sites = out.get(token)
+    if (!sites) out.set(token, [loc(node)])
+    else if (sites.length < SYMBOL_SITES_PER_FILE && !sites.some((s) => s.line === loc(node).line)) sites.push(loc(node))
+  }
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object') return
+    if (node.type === 'Identifier') add(node.name, node)
+    else if (node.type === 'MemberExpression') {
+      const chain = memberChain(node)
+      if (chain) {
+        for (let from = 0; from < chain.length - 1; from++) {
+          let joined = chain[from].name
+          for (let to = from + 1; to < chain.length; to++) {
+            joined += chain[to].sep + chain[to].name
+            add(joined, node)
+          }
+        }
+      }
+    } else if (node.type === 'StringLiteral') {
+      const value = luaStringValue(node.raw)
+      if (value.length <= 300) {
+        if (!/\s/.test(value)) add(value, node)
+        for (const part of value.split(/[\s/]+/)) add(part, node)
+        for (const part of value.split(/[\s/.:'"()]+/)) add(part, node)
+      }
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'loc' || key === 'range') continue
+      const v = node[key]
+      if (Array.isArray(v)) v.forEach(visit)
+      else visit(v)
+    }
+  }
+  visit(ast)
+  return out
+}
+
+function collectIgnores(ast: any): IgnoreDirective[] {
+  const out: IgnoreDirective[] = []
+  for (const c of (ast.comments ?? []) as any[]) {
+    const m = /ww:ignore(-file)?\b([^\n]*)/.exec(String(c.value ?? ''))
+    if (!m) continue
+    out.push({ line: c.loc?.start?.line ?? 0, file: m[1] !== undefined, ids: m[2].split(/[\s,]+/).filter((t) => t.length > 0) })
+  }
+  return out
+}
+
+/** externals — константы других модулей мода по ключу `модуль.ИМЯ` (из их exports): `require("ma.guild").CLASS`. */
+export function analyzeLua(source: string, externals: ReadonlyMap<string, string> = new Map()): Analysis {
   let ast: any
   try {
     ast = parse(source, { locations: true, luaVersion: '5.3', comments: true })
   } catch (e: any) {
     return {
       syntaxError: { message: String(e.message ?? e), line: e.line ?? 0, column: (e.column ?? 0) + 1 },
-      comments: [],
+      ignores: [],
+      symbols: new Map(),
+      exports: new Map(),
       refs: [],
       lints: [],
       writes: [],
@@ -290,6 +448,8 @@ export function analyzeLua(source: string): Analysis {
   }
 
   const { aliases, modules } = collectAliases(ast)
+  const consts = collectConstants(ast, modules, externals)
+  const str = (node: any): string | null => constValue(node, consts, modules, externals)
   const refs: Reference[] = []
   const lints: Lint[] = []
   const writes: ObjectWrite[] = []
@@ -359,8 +519,8 @@ export function analyzeLua(source: string): Analysis {
     if (!called) return null
     if (called.method) return called.name === 'get' ? accessPath(node.base?.base) : null
     if (CLASS_SOURCE.has(called.name)) {
-      const first = callArguments(node)[0]
-      return first?.type === 'StringLiteral' ? { root: luaStringValue(first.raw), path: [] } : null
+      const root = str(callArguments(node)[0])
+      return root !== null ? { root, path: [] } : null
     }
     return null
   }
@@ -404,23 +564,25 @@ export function analyzeLua(source: string): Analysis {
         const name = wrapped ?? (method ? called.name : (aliases.get(called.name) ?? called.name))
         const viaWrapper = wrapped !== undefined
 
+        const firstValue = str(args[0])
+
         if ((!method || viaWrapper) && VERIFIABLE.has(name)) {
-          const first = args[0]
           refs.push({
             fn: name,
-            arg: first?.type === 'StringLiteral' ? luaStringValue(first.raw) : null,
+            arg: firstValue,
+            viaConstant: firstValue !== null && args[0]?.type !== 'StringLiteral',
             ...loc(node),
             callbacks: HOOK_REGISTER.has(name) ? collectCallbacks(args) : [],
           })
         }
 
-        if (!method && args[0]?.type === 'StringLiteral') {
+        if (!method && firstValue !== null) {
           if (HOOK_REGISTER.has(name)) {
-            const owning = luaStringValue(args[0].raw).split(':')[0]
+            const owning = firstValue.split(':')[0]
             bindCallbackParam(args[1], owning)
             bindCallbackParam(args[2], owning)
           } else if (name === 'NotifyOnNewObject') {
-            bindCallbackParam(args[1], luaStringValue(args[0].raw))
+            bindCallbackParam(args[1], firstValue)
           }
         }
 
@@ -460,9 +622,8 @@ export function analyzeLua(source: string): Analysis {
           }
         }
 
-        if (!method && !viaWrapper && ctx.topLevel && HOOK_REGISTER.has(name) && args[0]?.type === 'StringLiteral') {
-          const path = luaStringValue(args[0].raw)
-          if (path.startsWith('/Game/')) {
+        if (!method && !viaWrapper && ctx.topLevel && HOOK_REGISTER.has(name) && firstValue !== null) {
+          if (firstValue.startsWith('/Game/')) {
             lint(
               'bp_hook_at_load_time',
               'error',
@@ -560,21 +721,18 @@ export function analyzeLua(source: string): Analysis {
   const rootCtx: Ctx = { topLevel: true, asyncOrigin: null, inGameThread: false, deferred: false }
   for (const stmt of ast.body ?? []) walk(stmt, rootCtx)
 
-  const comments: CommentSpan[] = []
-  for (const c of (ast.comments ?? []) as any[]) {
-    const start = c.loc?.start
-    const end = c.loc?.end
-    if (!start || !end) continue
-    for (let ln = start.line; ln <= end.line; ln++) {
-      comments.push({
-        line: ln,
-        from: ln === start.line ? start.column + 1 : 1,
-        to: ln === end.line ? end.column : Number.MAX_SAFE_INTEGER,
-      })
-    }
+  return {
+    ignores: collectIgnores(ast),
+    symbols: collectSymbols(ast),
+    exports: moduleExports(ast, consts),
+    refs,
+    lints,
+    writes,
+    requires,
+    usesDirectRegisterHook,
+    usesWWRegisterHook,
+    usesDirectNotifyOnNewObject,
   }
-
-  return { comments, refs, lints, writes, requires, usesDirectRegisterHook, usesWWRegisterHook, usesDirectNotifyOnNewObject }
 }
 
 export function isClassNameArgument(fn: string): boolean {
