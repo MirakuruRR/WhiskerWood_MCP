@@ -55,6 +55,18 @@
 Первая строка `.lm`: `blueprint BP_X : Parent at /Game/Mods/<Mod>/BP_X`. Путь обязан
 совпадать с расположением файла.
 
+Папку, PAL и `.uplugin` создаёт «New mod...» плагина WWModTools (правый клик по
+`Content/Mods` или меню Mod Tools). PAL получает первый свободный ChunkId в 1..300: занятые
+берутся из всех PAL проекта, из chunk id, назначенных ассетам напрямую, и из имён
+`pakchunk<N>-Windows.pak` в `<kit>/Windows/Whiskerwood/Content/Paks`; `CookRule` — `AlwaysCook`,
+`bLabelAssetsInMyDirectory` метит всю папку. Без редактора то же делает
+`UnrealEditor-Cmd <kit>/Whiskerwood.uproject -run=pythonscript -script=<файл.py> -EnablePlugins=PythonScriptPlugin,EditorScriptingUtilities -unattended -nosplash -nullrhi -nopause -stdout`
+(около 30 с): плагины включаются только на этот запуск, `.uproject` не меняется. `unreal.log`
+скрипта в stdout этого коммандлета не попадает — только в `<kit>/Saved/Logs/Whiskerwood.log`.
+Из MCP мод создаёт `ww_loom_new_mod`: скрипт `data/loom/new_mod.py` джобом, затем `.uplugin` и
+заготовки `.lm`. Пока редактор с китом открыт, второй процесс на том же проекте запускать
+нельзя — тогда только «New mod...» в нём.
+
 ## Пайплайн по шагам
 
 1. **Справка.** Синтаксис берётся из `loom-mcp`: `docs`, `docs_search`. Классы и сигнатуры —
@@ -163,6 +175,8 @@
 Как и почему — в [PLAN-loom.md](PLAN-loom.md), карточки инструментов — в [TOOLS.md](TOOLS.md).
 `docs`, `types` и `check` не дублируются: они остаются за `loom-mcp`.
 
+- **Новый мод без редактора.** `ww_loom_new_mod` создаёт папку мода с PAL (уникальный chunk
+  id), `.uplugin` и выбранными заготовками `.lm`.
 - **Логи и статус сборки.** `ww_game_log source=modlog` — modlog с офсета старта игры
   (`since=session`), строки загрузчика отдельно. `ww_loom_build` — сборка, `report.json` с хвостом `LogLoom*`
   и рецепт для известных провалов.

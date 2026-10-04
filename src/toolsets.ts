@@ -47,6 +47,7 @@ export const TOOL_GROUPS: Record<string, Toolset> = {
   ww_loom_build: 'loom',
   ww_loom_install: 'loom',
   ww_loom_status: 'loom',
+  ww_loom_new_mod: 'loom',
 }
 
 export function toolsetEnabled(config: ServerConfig, group: Toolset): boolean {

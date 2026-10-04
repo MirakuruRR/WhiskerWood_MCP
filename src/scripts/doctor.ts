@@ -4,7 +4,7 @@ import { repoRoot } from '../utils/cli-config'
 import { getBridge } from '../utils/bridge-client'
 import { defaultSeedPath } from './memory-sync'
 import { sharedLibsRoot } from '../utils/ue4ss-deploy'
-import { findEditorProcess, kitStatus, savedModsDir } from '../utils/kit'
+import { editorPluginPaths, findEditorProcess, kitStatus, NEW_MOD_SCRIPT, savedModsDir } from '../utils/kit'
 import { loomDrift } from '../tools/loom-status'
 import { WHISKERWOOD_APP_ID, findSteamGame } from '../utils/steam-locate'
 
@@ -294,6 +294,12 @@ function checkLoom(cfg: ServerConfig): void {
   const editor = findEditorProcess(kit.uproject)
   if (editor) add('ok', `редактор открыт с этим .uproject (pid ${editor.pid})`, 'сборка пойдёт через DirectoryWatcher, headless не нужен')
   else add('ok', 'редактор закрыт', 'headless-сборка возможна: UnrealEditor-Cmd -run=LoomBuild')
+
+  const plugins = editorPluginPaths(kit)
+  const noPlugins = plugins ? [plugins.python, plugins.scripting].filter((p) => !existsSync(p)) : ['движок не найден']
+  if (!existsSync(NEW_MOD_SCRIPT)) add('fail', 'нет скрипта создания мода', NEW_MOD_SCRIPT, 'восстановите data/loom/new_mod.py из репозитория')
+  else if (noPlugins.length > 0) add('warn', 'ww_loom_new_mod недоступен', `нет ${noPlugins.join(', ')}`, 'новый мод — через New mod... в редакторе')
+  else add('ok', 'ww_loom_new_mod готов', 'PythonScriptPlugin и EditorScriptingUtilities есть в движке')
 
   if (existsSync(kit.gameInstallTxt)) {
     const text = readFileSync(kit.gameInstallTxt, 'utf8')

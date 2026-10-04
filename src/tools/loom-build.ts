@@ -344,7 +344,9 @@ function pickJob(config: ServerConfig, kit: KitPaths, action: string, jobId: str
       text: finish({ action, status: 'foreign_job', job_id: job.id, job_kind: job.kind, job_status: job.status }, {}, [
         job.kind === 'cook'
           ? `джоб ${job.id} — cook, он принадлежит ww_loom_install: ww_loom_install action=${action === 'cancel' ? 'cancel' : 'status'} job_id=${job.id}`
-          : `джоб ${job.id} вида ${job.kind} — не сборка Blueprint`,
+          : job.kind === 'new-mod'
+            ? `джоб ${job.id} — создание мода, он принадлежит ww_loom_new_mod: ww_loom_new_mod action=${action === 'cancel' ? 'cancel' : 'status'} job_id=${job.id}`
+            : `джоб ${job.id} вида ${job.kind} — не сборка Blueprint`,
       ]),
     }
   }
@@ -466,6 +468,10 @@ function busyText(config: ServerConfig, kit: KitPaths, job: JobRecord): string {
       'уже идёт сборка этого кита: две сборки одного проекта одновременно недопустимы',
       `дождись завершения джоба ${job.id} (action=status показывает его прогресс и хвост лога) или сними его: action=cancel job_id=${job.id}`,
     ])
+  }
+  if (job.kind === 'new-mod') {
+    fields.next = `ww_loom_new_mod action=status job_id=${job.id}`
+    return finish(fields, jf.blocks, [`в ките создаётся мод (${job.id}): редактор занят этим проектом, дождись ww_loom_new_mod action=status job_id=${job.id}`])
   }
   if (job.kind !== 'cook') {
     return finish(fields, jf.blocks, [`в ките идёт джоб ${job.id}: один джоб на кит за раз, дождись его завершения`])

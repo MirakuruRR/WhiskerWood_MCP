@@ -16,7 +16,7 @@ import { basename, dirname } from 'node:path'
 import { ServerConfig } from '../config'
 import { renderAiText, Scalar } from '../utils/ai-text'
 import { activeJob, cancelJob, jobProgress, JobRecord, listJobs, readJob, startJob, updateJob } from '../utils/jobs'
-import { findEditorProcess, KitPaths, kitStatus, runUatBat, savedModsDir, savedModsSandbox } from '../utils/kit'
+import { findEditorProcess, kitEngineVersion, KitPaths, kitStatus, runUatBat, savedModsDir, savedModsSandbox } from '../utils/kit'
 import { failureDetail, unrealPakList } from '../utils/loom'
 import { PathSandboxError } from '../utils/path-sandbox'
 
@@ -31,7 +31,6 @@ export interface LoomInstallArgs {
 const REPORT_TYPE = 'loom_install'
 const MOD_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
 const PAK_LIMIT_BYTES = 123_999_999
-const DEFAULT_ENGINE_VERSION = '5.8'
 const NEXT_RESTART = 'ww_game_process restart save=<сохранение> wait_for=world — pak-мод подхватывается только при старте игры'
 
 const MOUNT_RE = /Listing .* with mount point "(.*)"/
@@ -63,21 +62,6 @@ function hasRun(segs: string[], run: string[]): boolean {
 
 function isOurPath(full: string[], modName: string): boolean {
   return hasRun(full, ['Content', 'Mods', modName]) || hasRun(full, ['Game', 'Mods', modName])
-}
-
-function expectedEngineVersion(kit: KitPaths): string {
-  if (kit.engineDir) {
-    try {
-      const v = JSON.parse(readFileSync(`${kit.engineDir}/Build/Build.version`, 'utf8')) as {
-        MajorVersion?: number
-        MinorVersion?: number
-      }
-      if (typeof v.MajorVersion === 'number' && typeof v.MinorVersion === 'number') {
-        return `${v.MajorVersion}.${v.MinorVersion}`
-      }
-    } catch {}
-  }
-  return DEFAULT_ENGINE_VERSION
 }
 
 interface ModSource {
@@ -458,7 +442,7 @@ function checkPak(kit: KitPaths, modName: string, source: ModSource, probe: PakP
     }
   }
 
-  const expectedVersion = expectedEngineVersion(kit)
+  const expectedVersion = kitEngineVersion(kit)
   if (!source.engineVersion) {
     return {
       fields: {
@@ -719,7 +703,9 @@ function busyReport(config: ServerConfig, job: JobRecord, modName: string): stri
         ? `${rebuilding ? 'пак этого мода сейчас пересобирается, ставить и проверять его нельзя' : 'один джоб на кит за раз: cook пишет в pakchunk, ставить и запускать новый нельзя'}. Дождись ww_loom_install action=status job_id=${job.id} или сними через action=cancel job_id=${job.id}`
         : job.kind === 'editor-build'
           ? `в ките идёт сборка Blueprint (${job.id}): дождись ww_loom_build action=status job_id=${job.id} или сними через ww_loom_build action=cancel job_id=${job.id}`
-          : `в ките идёт джоб ${job.id}: один джоб на кит за раз, дождись его завершения`,
+          : job.kind === 'new-mod'
+            ? `в ките создаётся мод (${job.id}): дождись ww_loom_new_mod action=status job_id=${job.id}`
+            : `в ките идёт джоб ${job.id}: один джоб на кит за раз, дождись его завершения`,
   })
 }
 
@@ -847,7 +833,12 @@ function pickCookJob(config: ServerConfig, args: LoomInstallArgs, action: string
         job_id: job.id,
         job_kind: job.kind,
         job_status: job.status,
-        hint: job.kind === 'editor-build' ? `это сборка Blueprint, она принадлежит ww_loom_build: ww_loom_build action=${action === 'cancel' ? 'cancel' : 'status'} job_id=${job.id}` : `джоб вида ${job.kind} — не cook`,
+        hint:
+          job.kind === 'editor-build'
+            ? `это сборка Blueprint, она принадлежит ww_loom_build: ww_loom_build action=${action === 'cancel' ? 'cancel' : 'status'} job_id=${job.id}`
+            : job.kind === 'new-mod'
+              ? `это создание мода, оно принадлежит ww_loom_new_mod: ww_loom_new_mod action=${action === 'cancel' ? 'cancel' : 'status'} job_id=${job.id}`
+              : `джоб вида ${job.kind} — не cook`,
       }),
     }
   }

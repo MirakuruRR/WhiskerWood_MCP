@@ -73,17 +73,20 @@ const NEW_LOOM_MOD = (goal: string, modName: string) => `Собери мод Whi
    ww_call с bp_only: true (откажет там, куда Blueprint не дотянется) и ww_trace_calls
    (срабатывает ли событие и как часто).
 6. Файлы мода: <кит>/Content/Mods/${modName}/ — ${modName}.uplugin, PAL_${modName}.uasset и
-   сами .lm. PAL («New mod...») и .uplugin создаёт только редактор: если их нет, остановись и
-   попроси человека сделать правый клик по Content/Mods → New mod..., иначе у мода не будет
-   chunk id и .pak не соберётся. Совпадение папки, .uplugin, PAL, первой строки каждого .lm и
-   будущего .pak проверяет ww_loom_validate.
+   сами .lm. Если папки мода ещё нет, создай её одним вызовом ww_loom_new_mod action=create
+   mod_name=${modName} templates=[…]: он заводит PAL с уникальным chunk id (без него .pak не
+   соберётся), .uplugin и выбранные заготовки из шага 7, а ответ running дожидайся через
+   action=status job_id=…. Ответ editor_open — редактор с китом открыт: тогда мод создаёт
+   человек в нём (правый клик по Content/Mods → New mod...), заготовки кладёшь сам. Папку
+   существующего мода инструмент не трогает (mod_exists). Совпадение папки, .uplugin, PAL,
+   первой строки каждого .lm и будущего .pak проверяет ww_loom_validate.
 7. Заготовки .lm — ресурсы этого MCP-сервера (resources/list, resources/read):
    ${T}/BP_Startup — DataTable, RegisterModOptions;
    ${T}/BP_MapLoad — onLoadingFinished, Tick;
    ${T}/BP_MainMenuLoad;
    ${T}/HudOverlay и ${T}/WBP_Overlay — оверлей в ряду HUD.
-   Бери их, а не пиши с нуля; <Мод> в них заменяется именем папки мода, а файл называется по
-   строке blueprint внутри. HudOverlay — вариант BP_MapLoad для мода с оверлеем: он ложится
+   Бери их, а не пиши с нуля (ww_loom_new_mod кладёт их сам по templates); <Мод> в них
+   заменяется именем папки мода, а файл называется по строке blueprint внутри. HudOverlay — вариант BP_MapLoad для мода с оверлеем: он ложится
    как BP_MapLoad.lm вместо шаблона BP_MapLoad и только в паре с WBP_Overlay
    (WBP_<Мод>Overlay.lm).
 8. Синтаксис бери только из справки Loom (loom-mcp: docs и docs_search; исходники —
@@ -143,8 +146,10 @@ const PORT_TO_LOOM = (luaMod: string, modName: string) => `Перенеси Lua-
 6. Сверяй поведение с оригиналом, пока он жив: ww_validate_mod (пути хуков целы), ww_game_eval,
    ww_game_log (source=ue4ss для Lua-мода и source=modlog для Loom-мода), ww_ui_tree. Одно и то
    же действие на одном сейве должно давать одинаковый результат в обоих логах.
-7. Дальше цикл Loom-мода, как в промпте ww:new-loom-mod: файлы мода и PAL в редакторе,
-   заготовки .lm — ресурсы этого MCP-сервера ${T}/<имя> (список — resources/list), справка
+7. Дальше цикл Loom-мода, как в промпте ww:new-loom-mod: папку мода с PAL, .uplugin и
+   заготовками создаёт ww_loom_new_mod action=create mod_name=${modName} (при открытом
+   редакторе — «New mod...» в нём), заготовки .lm — ресурсы этого MCP-сервера ${T}/<имя>
+   (список — resources/list), справка
    по языку из loom-mcp (docs, docs_search), затем ww_loom_validate → ww_loom_build →
    ww_loom_install (start → status → install) →
    ww_game_process restart save=<имя сейва> wait_for=world → ww_game_log с source=modlog.
@@ -197,7 +202,7 @@ export const PROMPT_GROUPS: Record<string, Toolset> = {
   'ww:fix-after-patch': 'recon',
 }
 
-interface LoomTemplate {
+export interface LoomTemplate {
   name: string
   uri: string
   file: string
@@ -214,7 +219,7 @@ function templateDescription(text: string): string {
   return lines.join(' ')
 }
 
-function loomTemplates(): LoomTemplate[] {
+export function loomTemplates(): LoomTemplate[] {
   let files: string[]
   try {
     files = readdirSync(LOOM_TEMPLATE_DIR).filter((f) => f.endsWith(LOOM_TEMPLATE_EXT)).sort()

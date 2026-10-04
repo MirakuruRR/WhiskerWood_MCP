@@ -39,6 +39,7 @@ import { handleEventSurface } from './tools/event-surface'
 import { handleLift } from './tools/lift'
 import { handleLoomBuild, LoomBuildArgs } from './tools/loom-build'
 import { handleLoomInstall, LoomInstallArgs } from './tools/loom-install'
+import { handleLoomNewMod, LoomNewModArgs } from './tools/loom-new-mod'
 import { handleLoomStatus } from './tools/loom-status'
 import { handleLoomValidate, LoomValidateArgs } from './tools/loom-validate'
 import { handleMemoryWakeup } from './tools/memory-wakeup'
@@ -918,6 +919,33 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     wrapPlain((args: LoomInstallArgs) => handleLoomInstall(config, args)),
+  )
+
+  registerTool(
+    'ww_loom_new_mod',
+    {
+      title: 'Новый Loom-мод в ките',
+      description:
+        'Создаёт новый Loom-мод в ките без интерфейса редактора — то же, что «New mod...» плагина WWModTools: папка <кит>/Content/Mods/<Мод>, PAL_<Мод> (Primary Asset Label с первым свободным ChunkId 1..300 по существующим PAL и pakchunk<N>-Windows.pak, CookRule AlwaysCook, метит всю папку; без него .pak не соберётся), <Мод>.uplugin в формате плагина (Name, Description, Version, CreatedBy, EngineVersion = версии движка кита) и по желанию заготовки .lm из ресурсов ww://templates/loom/<имя> с подстановкой имени мода. PAL пишет сам редактор: UnrealEditor-Cmd -run=pythonscript со скриптом data/loom/new_mod.py джобом, около 30 с (.uproject не меняется). action=create проверяет всё до записи — имя (латиница, цифры, _), шаблоны (HudOverlay — вместо BP_MapLoad и только с WBP_Overlay), папки мода ещё нет (иначе mod_exists, ничего не перезаписывает), редактор с проектом закрыт (editor_open: тогда создай мод в нём через New mod...), джобов в ките нет (busy), — запускает джоб и ждёт его до wait_ms; .uplugin и .lm пишутся только после успешного PAL, а при провале папка мода убирается целиком. Ответ: status created | failed | cancelled | running, chunk, files, next. action=status job_id=… — итог джоба (дописывает файлы, если create не дождался); action=cancel снимает джоб деревом процессов и убирает недосозданное. Единственная запись сервера в <кит>/Content — эта новая папка.',
+      inputSchema: {
+        action: z
+          .enum(['create', 'status', 'cancel'])
+          .describe('create — создать мод джобом; status — итог джоба (без job_id — идущего или последнего); cancel — снять джоб'),
+        mod_name: z.string().optional().describe('Имя папки мода в <кит>/Content/Mods: латиница, цифры, _, первым — буква или цифра; оно же PAL_<Мод>, .uplugin и .pak. Обязательно для create'),
+        display_name: z.string().optional().describe('Name в .uplugin — отображаемое имя, по умолчанию имя папки'),
+        description: z.string().optional().describe('Description в .uplugin, по умолчанию пусто'),
+        version: z.string().optional().describe('Version в .uplugin, по умолчанию 1.0'),
+        created_by: z.string().optional().describe('CreatedBy в .uplugin, по умолчанию пусто'),
+        templates: z
+          .array(z.string())
+          .optional()
+          .describe('Заготовки .lm, которые положить сразу: BP_Startup, BP_MapLoad, BP_MainMenuLoad, HudOverlay, WBP_Overlay (имена ресурсов ww://templates/loom/<имя>); HudOverlay ложится как BP_MapLoad.lm и требует WBP_Overlay'),
+        job_id: z.string().optional().describe('id джоба из action=create: для status и cancel'),
+        wait_ms: z.number().int().min(0).max(300000).optional().describe('Сколько create ждёт джоб, по умолчанию 90000; 0 — сразу вернуть job_id'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    wrapPlain((args: LoomNewModArgs) => handleLoomNewMod(config, args)),
   )
 
   registerTool(

@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { ServerConfig } from '../config'
 
-export type JobKind = 'cook' | 'editor-build'
+export type JobKind = 'cook' | 'editor-build' | 'new-mod'
 export type JobStatus = 'running' | 'done' | 'failed' | 'cancelled' | 'lost'
 
 export interface JobSpec {
@@ -11,6 +11,8 @@ export interface JobSpec {
   cwd?: string
   project: string
   timeoutMs?: number
+  env?: Record<string, string>
+  params?: Record<string, unknown>
 }
 
 export interface JobRecord {
@@ -29,6 +31,8 @@ export interface JobRecord {
   logPath: string
   metaPath: string
   timeoutMs: number
+  env?: Record<string, string>
+  params?: Record<string, unknown>
   result?: Record<string, unknown>
   error?: string
 }
@@ -140,6 +144,8 @@ export function startJob(config: ServerConfig, spec: JobSpec): StartResult {
     logPath,
     metaPath,
     timeoutMs: spec.timeoutMs ?? 0,
+    env: spec.env,
+    params: spec.params,
   }
   writeMeta(rec)
   writeFileSync(logPath, `$ ${spec.cmd.join(' ')}\n`)

@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { basename } from 'node:path'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { basename, dirname, resolve } from 'node:path'
 import { ServerConfig } from '../config'
-import { PathSandbox } from './path-sandbox'
+import { PathSandbox, PathSandboxError } from './path-sandbox'
 
 export type EngineSource = 'config' | 'registry'
 
@@ -178,6 +178,50 @@ export function unrealPakExe(kit: KitPaths): string | null {
 
 export function runUatBat(kit: KitPaths): string | null {
   return kit.engineDir ? `${kit.engineDir}/Build/BatchFiles/RunUAT.bat` : null
+}
+
+export const NEW_MOD_SCRIPT = norm(resolve(import.meta.dir, '../../data/loom/new_mod.py'))
+
+const DEFAULT_ENGINE_VERSION = '5.8'
+
+/** Major.Minor из Build.version движка кита: это EngineVersion в .uplugin мода. */
+export function kitEngineVersion(kit: KitPaths): string {
+  if (kit.engineDir) {
+    try {
+      const v = JSON.parse(readFileSync(`${kit.engineDir}/Build/Build.version`, 'utf8').trimStart()) as {
+        MajorVersion?: number
+        MinorVersion?: number
+      }
+      if (typeof v.MajorVersion === 'number' && typeof v.MinorVersion === 'number') {
+        return `${v.MajorVersion}.${v.MinorVersion}`
+      }
+    } catch {}
+  }
+  return DEFAULT_ENGINE_VERSION
+}
+
+export function editorPluginPaths(kit: KitPaths): { python: string; scripting: string } | null {
+  if (!kit.engineDir) return null
+  return {
+    python: `${kit.engineDir}/Plugins/Experimental/PythonScriptPlugin/PythonScriptPlugin.uplugin`,
+    scripting: `${kit.engineDir}/Plugins/Editor/EditorScriptingUtilities/EditorScriptingUtilities.uplugin`,
+  }
+}
+
+/** Единственная зона записи сервера в <kit>/Content: новая папка мода в Content/Mods. */
+export function newModSandbox(kit: KitPaths): PathSandbox {
+  return new PathSandbox([kit.contentMods])
+}
+
+/** Путь папки мода, если она ровно <kit>/Content/Mods/<Мод>; mustBeAbsent — папки ещё нет. */
+export function newModDir(kit: KitPaths, modName: string, mustBeAbsent: boolean): string {
+  const dir = newModSandbox(kit).validateAndResolve(`${kit.contentMods}/${modName}`)
+  const root = realpathSync(kit.contentMods)
+  const sameParent = process.platform === 'win32' ? dirname(dir).toLowerCase() === root.toLowerCase() : dirname(dir) === root
+  if (!sameParent) throw new PathSandboxError(`папка мода не лежит прямо в ${kit.contentMods}: ${dir}`)
+  if (basename(dir) !== modName) throw new PathSandboxError(`имя папки ${basename(dir)} не совпадает с модом ${modName}`)
+  if (mustBeAbsent && existsSync(dir)) throw new PathSandboxError(`папка мода уже есть: ${dir}`)
+  return norm(dir)
 }
 
 /** Песочница для записи в каталог модов игры: только <saved>/mods, и внутри — только папка самого мода. */

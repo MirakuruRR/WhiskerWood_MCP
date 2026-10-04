@@ -20,6 +20,7 @@ interface Meta {
   logPath: string
   metaPath: string
   timeoutMs: number
+  env?: Record<string, string>
   result?: Record<string, unknown>
   error?: string
   runnerPid?: number
@@ -69,6 +70,7 @@ let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
 try {
   proc = Bun.spawn(meta.cmd, {
     cwd: meta.cwd ?? undefined,
+    env: meta.env ? { ...process.env, ...meta.env } : undefined,
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',

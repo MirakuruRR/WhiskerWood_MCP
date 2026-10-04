@@ -1,6 +1,6 @@
 # Инструменты
 
-42 инструмента, 4 промпта и ресурсы — шаблоны `.lm`. Полные описания и схемы аргументов
+43 инструмента, 4 промпта и ресурсы — шаблоны `.lm`. Полные описания и схемы аргументов
 приходят в MCP-клиент вместе со списком tools — здесь карта: что для чего и в каком порядке
 вызывать.
 
@@ -8,8 +8,8 @@
 SQLite. **Живые** требуют запущенной игры с мостом WWBridge и помечены ниже как «живой».
 
 Инструменты собраны в группы, и группы включаются ключом `toolsets` в конфиге: `recon` (15),
-`live` (11), `lua` (6), `memory` (4), `loom` (6). По умолчанию включены все. В Loom-режиме
-набор `lua` обычно выключают — остаётся 36 инструментов: pak-мод не перехватывает функции, ему
+`live` (11), `lua` (6), `memory` (4), `loom` (7). По умолчанию включены все. В Loom-режиме
+набор `lua` обычно выключают — остаётся 37 инструментов: pak-мод не перехватывает функции, ему
 нужны `recon` (в том числе `ww_lua_api` и `ww_verify_hook` — на них опираются `ww_game_eval` и
 трейс), `live`, `memory` и `loom`: `"toolsets": ["recon", "live", "memory", "loom"]`. Промпты и
 ресурсы подчиняются тем же группам.
@@ -41,6 +41,7 @@ ww_find_symbol / ww_find_asset → ww_lift как игра это делает �
 ww_event_surface                        на что подписаться и что переопределить
 ww_get_function (loom_call, bp)         готовый вызов и доступность из Blueprint
 ww_call bp_only / ww_trace_calls        проверить цепочку вживую за секунды
+ww_loom_new_mod action=create           папка мода: PAL с chunk id, .uplugin, заготовки .lm
 ww://templates/loom/* → .lm             заготовки .lm — ресурсы сервера
 loom docs → .lm → ww_loom_validate       check + правила игры, до нуля
 ww_loom_build → ww_loom_install          Blueprint → .pak: start → status → install
@@ -141,6 +142,7 @@ ww_game_log source=modlog / ww_ui_tree   сработало ли, что на э
 | `ww_loom_status` | Кит и его расхождения с игрой: движок (по `EngineAssociation` через реестр), `loom.exe`, `types.json`, редактор, версия Loom против плагина и главное — сверка `types.json` с индексом. **Первый вызов**, если мод на Loom не собирается или после патча |
 | `ww_lift` | Cooked Blueprint → читаемый `.lm`: сайдкар отдаёт JSON пакета, `loom.exe lift` поднимает его в скретч-проект. Отказы добиваются фолбэками, каждое заглушённое место помечено `// not lifted` с причиной и подсказкой на `ww_get_bytecode`. Режим `pattern` — поиск по коду всей игры (функция, строка, сниппет) по поднятым на шаге `index-lift` исходникам |
 | `ww_event_surface` | Что можно переопределить и на что подписаться: делегаты ModAPI, `BlueprintAssignable`-диспетчеры, переопределяемые события, и только потом Tick. Заменяет вопрос «что хукнуть», которого в Blueprint не существует |
+| `ww_loom_new_mod` | Новый мод без интерфейса редактора — то же, что «New mod...» плагина WWModTools: папка `<кит>/Content/Mods/<Мод>/`, `PAL_<Мод>` (первый свободный ChunkId 1..300 по существующим PAL и `pakchunk<N>-Windows.pak`, `AlwaysCook`, метит всю папку), `<Мод>.uplugin` в формате плагина с `EngineVersion` движка кита и по `templates` — заготовки `.lm` с подставленным именем. `create → status`, `cancel`: PAL сохраняет `UnrealEditor-Cmd -run=pythonscript` джобом (~30 с, `.uproject` не трогается), `create` ждёт его до `wait_ms` и отвечает `created` с `chunk`, `files` и `next`, иначе `running` с `job_id`. До запуска отказывает: `bad_mod_name`, `bad_args` (HudOverlay вместе с BP_MapLoad или без WBP_Overlay), `mod_exists` (ничего не перезаписывает), `busy`, `editor_open` — тогда мод создают «New mod...» в открытом редакторе. Если PAL не создан, папка мода убирается целиком |
 | `ww_loom_validate` | `loom check` плюс правила игры: заголовок и путь файла, PAL, имя `.uplugin` и будущего `.pak`, `LogMessage` без префикса, `\n` в значении по умолчанию, наследование от игрового виджета, override с возвратом, `DeprecateSlateVector2D`, мир до `onLoadingFinished`, BOM. Вызывать после каждой правки `.lm` |
 | `ww_loom_build` | Сборка Blueprint: `action=build` — редактор открыт: плагин собирает сам по DirectoryWatcher, закрыт: headless `UnrealEditor-Cmd -run=LoomBuild` джобом с `job_id`. `action=status` читает `report.json`, хвост `LogLoomBuild` и джоб (`job_id` — конкретный). `action=cancel` снимает headless-сборку деревом процессов |
 | `ww_loom_install` | `Cook & Install` без редактора, `start → status → install`. `start` — RunUAT BuildCookRun джобом; `status` только читает: прогресс, найденный среди `pakchunk<N>` пак мода, итог проверок и `ready_to_install` / `installed` по сравнению с `<saved>/mods/<Мод>/`; `install` — единственное копирующее действие, с бэкапом прежней версии, повтор отвечает `already_installed`. На джоб смотрят только при явном `job_id`: `status` и `install` с одним `mod_name` работают по паку, который уже лежит в `pakchunk`, как `start` с `skip_cook`, и упавший или отменённый прошлый cook им не мешает; если cook этого мода идёт сейчас — `busy` с его `job_id`. `cancel` снимает cook: по `job_id`, по `mod_name` (идущий или последний cook этого мода) или любой идущий. Pak подхватывается только при старте игры |
@@ -148,17 +150,19 @@ ww_game_log source=modlog / ww_ui_tree   сработало ли, что на э
 > Мод на Loom — это папка `<кит>/Content/Mods/<Мод>/`: `<Мод>.uplugin`, `PAL_<Мод>.uasset`
 > (без него пак не соберётся) и `.lm` рядом с будущими `.uasset`. Папка, `.uplugin` и `.pak`
 > делят одно имя; `EngineVersion` — «5.8». Файлы `.lm` пишутся **без BOM**: парсер Loom
-> спотыкается на первом же символе. PAL и `.uplugin` создаёт только редактор («New mod...»),
-> а `ww_loom_validate` проверяет, что всё сошлось.
+> спотыкается на первом же символе. PAL и `.uplugin` создаёт `ww_loom_new_mod` или, при
+> открытом редакторе, «New mod...» в нём, а `ww_loom_validate` проверяет, что всё сошлось.
 >
-> Долгие операции (сборка, cook) идут джобами: `state/jobs/<id>.log` и `<id>.json`, один джоб
+> Долгие операции (сборка, cook, создание PAL) идут джобами: `state/jobs/<id>.log` и `<id>.json`, один джоб
 > на кит. Джоб переживает перезапуск MCP-сервера, `cancel` снимает всё дерево процессов. Каждый
-> инструмент владеет своими джобами: сборку ведёт `ww_loom_build`, cook — `ww_loom_install`.
+> инструмент владеет своими джобами: сборку ведёт `ww_loom_build`, cook — `ww_loom_install`,
+> создание мода — `ww_loom_new_mod`.
 
 ### Ресурсы: шаблоны `.lm`
 
 Заготовки `.lm` — не инструмент, а MCP-ресурсы группы `loom` (`resources/list`,
-`resources/read`, `text/plain`); на них ссылаются промпты `ww:new-loom-mod` и `ww:port-to-loom`.
+`resources/read`, `text/plain`); на них ссылаются промпты `ww:new-loom-mod` и `ww:port-to-loom`,
+а `ww_loom_new_mod` раскладывает их в папку нового мода по аргументу `templates`.
 
 | URI | Что внутри |
 |---|---|
