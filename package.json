@@ -21,6 +21,7 @@
     "smoke": "bun run src/scripts/smoke-client.ts",
     "memory:export": "bun run src/scripts/memory-export.ts",
     "memory:sync": "bun run src/scripts/memory-sync.ts",
+    "ue4ss-sdk": "bun run src/scripts/ue4ss-sdk.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

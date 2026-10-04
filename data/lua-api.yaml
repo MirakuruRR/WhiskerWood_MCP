@@ -617,15 +617,23 @@
   pitfalls: |
     Не путать с Lua-строкой: строковые параметры в хуках приходят как FString и требуют :ToString().
 
-- symbol: Utf8String
+- symbol: FUtf8String
   category: text
-  signature: 'Utf8String(...)'
-  summary: Не поддержан UE4SS на UE 5.6 в этой сборке.
-  status: broken
-  verified: doc
+  signature: 'FUtf8String(string) -> FUtf8String; :ToString() / :Len() / :Find(s) / :Append(s)'
+  summary: Строка движка в UTF-8; конструктор — глобал FUtf8String. Глобала Utf8String нет.
+  status: ok
+  verified: stand
+  example: |
+    local u = FUtf8String("Привет, мир")
+    u:ToString(), u:Len(), u:Find("мир")   -- "Привет, мир", 20, 15
   pitfalls: |
-    Использовать нельзя. Русский текст резолвится на стороне MCP через ww_resolve_loc,
-    в Lua уходит уже готовая строка.
+    Проверено на стенде 04.10.2026 (0.7.209.0, UE4SS 03dbd5c0): кириллица проходит без потерь
+    через FString(...), FUtf8String(...), Lua-строку в параметре FString нативной функции
+    (KismetStringLibrary:Len("Привет, мир") = 11) и FText (Conv_StringToText ->
+    Conv_TextToString). Len у FUtf8String считает байты, Find отдаёт байтовый индекс с 1.
+    ToUpper/ToLower меняют только ASCII — это поведение движка, а не порча строки.
+    Для обычного текста FUtf8String не нужен: в параметр FString передавай Lua-строку, FText
+    собирай через Conv_StringToText (см. FText) — сырая строка в FText роняет игру.
 
 - symbol: LocTextBlock
   category: text

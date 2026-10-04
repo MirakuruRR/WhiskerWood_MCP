@@ -2,8 +2,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { ServerConfig } from '../config'
 import { renderAiText, Scalar } from '../utils/ai-text'
 import { PathSandboxError } from '../utils/path-sandbox'
-import { loadModProject, ModProject, MOD_MANIFEST } from '../utils/mod-project'
+import { loadModProject, ModProject, MOD_DLL, MOD_ENTRY, MOD_MANIFEST, NATIVE_DIR } from '../utils/mod-project'
+import { BUILD_JUNK, describeDll, inspectDll, modParts, ModParts, nativeNewestMtime, partsLabel } from '../utils/mod-native'
 import { analyzeLua } from '../utils/lua-analyzer'
+import { gitIgnored } from '../utils/git-ignore'
 import { createZip, ZipEntry } from '../utils/zip'
 
 export interface PackageModArgs {
@@ -37,7 +39,8 @@ function report(fields: Record<string, Scalar>): string {
   return renderAiText({ reportType: 'mod_package', fields })
 }
 
-export function collectFiles(root: string): string[] {
+// .gitignore репозитория модов отсекает то, что мод пишет сам во время игры
+export function collectFiles(root: string, ignoredOut?: string[]): string[] {
   const out: string[] = []
   const walk = (dir: string, prefix: string, depth: number): void => {
     if (depth > 8) return
@@ -50,15 +53,17 @@ export function collectFiles(root: string): string[] {
         continue
       }
       if (st.isDirectory()) {
-        if (SKIP_DIRS.has(name)) continue
+        if (SKIP_DIRS.has(name) || (depth === 0 && name === NATIVE_DIR)) continue
         walk(full, `${prefix}${name}/`, depth + 1)
-      } else if (!SKIP_FILE.test(name)) {
+      } else if (!SKIP_FILE.test(name) && !BUILD_JUNK.test(name)) {
         out.push(`${prefix}${name}`)
       }
     }
   }
   walk(root, '', 0)
-  return out
+  const ignored = gitIgnored(root, out)
+  if (ignoredOut) ignoredOut.push(...out.filter((rel) => ignored.has(rel)))
+  return out.filter((rel) => !ignored.has(rel))
 }
 
 interface Vendored {
@@ -107,7 +112,7 @@ function vendorLibs(config: ServerConfig, sources: string[]): Vendored {
   return { entries, modules: modules.sort(), missing }
 }
 
-function installNoteRu(mod: ModProject, version: string): string {
+function installNoteRu(mod: ModProject, version: string, parts: ModParts): string {
   const title = `${mod.name} ${version} — мод для Whiskerwood`
   const lines = [title, '='.repeat(title.length)]
   if (mod.meta?.description) lines.push(mod.meta.description)
@@ -117,6 +122,13 @@ function installNoteRu(mod: ModProject, version: string): string {
     '----------',
     `- Whiskerwood ${mod.meta?.game_version ?? 'см. страницу мода'}`,
     '- UE4SS, установленный в игру (как — ниже)',
+    ...(parts.dll
+      ? [
+          '- в моде есть нативная часть dlls\\main.dll (C++-мод UE4SS), собранная под',
+          '  UE4SS experimental-latest: после обновления UE4SS она может перестать',
+          '  загружаться — тогда нужна новая версия мода',
+        ]
+      : []),
     '',
     'Шаг 1. UE4SS',
     '------------',
@@ -149,6 +161,7 @@ function installNoteRu(mod: ModProject, version: string): string {
     '',
     '   ВЫШЕ комментария "; Built-in keybinds, do not move up!".',
     '4. Запусти игру.',
+    ...(parts.dll ? ['', 'Обновляя мод, сначала закрой игру: запущенная игра держит dlls\\main.dll,', 'и Windows не даст его перезаписать.'] : []),
     '',
     'Проверка',
     '--------',
@@ -162,7 +175,7 @@ function installNoteRu(mod: ModProject, version: string): string {
   return lines.join('\r\n')
 }
 
-function installNoteEn(mod: ModProject, version: string): string {
+function installNoteEn(mod: ModProject, version: string, parts: ModParts): string {
   const title = `${mod.name} ${version} — a mod for Whiskerwood`
   const lines = [title, '='.repeat(title.length)]
   if (mod.meta?.description) lines.push(mod.meta.description)
@@ -172,6 +185,13 @@ function installNoteEn(mod: ModProject, version: string): string {
     '------------',
     `- Whiskerwood ${mod.meta?.game_version ?? 'see the mod page'}`,
     '- UE4SS installed into the game (see below)',
+    ...(parts.dll
+      ? [
+          '- the mod has a native part, dlls\\main.dll (a UE4SS C++ mod), built against',
+          '  UE4SS experimental-latest: after a UE4SS update it may stop loading —',
+          '  a new mod version will be needed then',
+        ]
+      : []),
     '',
     'Step 1. UE4SS',
     '-------------',
@@ -204,6 +224,7 @@ function installNoteEn(mod: ModProject, version: string): string {
     '',
     '   ABOVE the "; Built-in keybinds, do not move up!" comment.',
     '4. Start the game.',
+    ...(parts.dll ? ['', 'Close the game before updating the mod: a running game holds dlls\\main.dll', 'and Windows will not let you overwrite it.'] : []),
     '',
     'Verify',
     '------',
@@ -247,14 +268,22 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     throw e
   }
 
-  if (!existsSync(mod.entry)) {
+  const parts = modParts(mod.root, mod.meta?.entry ?? MOD_ENTRY)
+  if (!parts.lua && !parts.dll) {
     return report({
       status: 'entry_missing',
       mod_root: mod.root,
       entry: mod.entry,
-      hint: 'нет Scripts/main.lua — создай мод через ww_scaffold_mod',
+      hint: parts.native
+        ? `нет ни Scripts/main.lua, ни ${MOD_DLL}: собери нативную часть из ${NATIVE_DIR}/`
+        : 'нет Scripts/main.lua — создай мод через ww_scaffold_mod',
     })
   }
+  const dll = parts.dll ? inspectDll(`${mod.root}/${MOD_DLL}`) : null
+  if (dll && dll.machine !== 'x64') {
+    return report({ status: 'dll_not_x64', dll: `${mod.root}/${MOD_DLL}`, machine: dll.machine, hint: 'игра 64-битная: UE4SS загрузит только x64 DLL' })
+  }
+  const dllStale = dll !== null && parts.native && nativeNewestMtime(mod.root) > dll.mtimeMs
   if (!mod.meta) {
     return report({
       status: 'manifest_missing',
@@ -268,7 +297,8 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     return report({ status: 'bad_version', mod_version: version, hint: 'версия вида 1.0 или 1.2.3' })
   }
 
-  const files = collectFiles(mod.root)
+  const gitignored: string[] = []
+  const files = collectFiles(mod.root, gitignored)
   const luaSources: string[] = []
   let bridgeOnlyHooks = false
   for (const rel of files) {
@@ -335,8 +365,8 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
   // BOM: файл открывают блокнотом, без него кириллица читается как cp1251
   const withBom = (text: string): Buffer =>
     Buffer.from(text.startsWith('﻿') ? text : `﻿${text}`, 'utf8')
-  entries.push({ path: 'УСТАНОВКА.txt', data: withBom(ru.text || installNoteRu(mod, version)) })
-  entries.push({ path: 'INSTALL.txt', data: withBom(en.text || installNoteEn(mod, version)) })
+  entries.push({ path: 'УСТАНОВКА.txt', data: withBom(ru.text || installNoteRu(mod, version, parts)) })
+  entries.push({ path: 'INSTALL.txt', data: withBom(en.text || installNoteEn(mod, version, parts)) })
 
   const distDir = `${config.modsRepo}/dist`
   mkdirSync(distDir, { recursive: true })
@@ -359,6 +389,12 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     size_kb: Math.round((zip.length / 1024) * 10) / 10,
     files: entries.length,
     root_folder: `${mod.name}/`,
+    parts: partsLabel(parts),
+    ...(dll ? { dll: describeDll(dll) } : {}),
+    ...(dllStale
+      ? { warning_dll_stale: `исходники ${NATIVE_DIR}/ новее ${MOD_DLL}: в архив ушла старая DLL — пересобери нативную часть и собери пакет заново` }
+      : {}),
+    ...(gitignored.length > 0 ? { excluded_by_gitignore: gitignored.slice(0, 10).join(', ') + (gitignored.length > 10 ? ` и ещё ${gitignored.length - 10}` : '') } : {}),
     vendored_libs: vendored.modules.length > 0 ? vendored.modules.join(', ') : 'нет',
     readme_ru: !readmeRu ? 'сгенерирован' : ru.refreshed ? 'взят из мода, сигнатура в архиве заменена на текущую' : 'взят из мода',
     readme_en: !readmeEn ? 'сгенерирован' : en.refreshed ? 'взят из мода, сигнатура в архиве заменена на текущую' : 'взят из мода',

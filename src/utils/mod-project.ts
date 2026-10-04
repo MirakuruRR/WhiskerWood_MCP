@@ -5,6 +5,8 @@ import { PathSandbox } from './path-sandbox'
 
 export const MOD_MANIFEST = 'mod.json'
 export const MOD_ENTRY = 'Scripts/main.lua'
+export const MOD_DLL = 'dlls/main.dll'
+export const NATIVE_DIR = 'native'
 
 export interface ModMeta {
   name: string

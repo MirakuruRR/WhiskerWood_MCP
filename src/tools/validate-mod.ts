@@ -4,7 +4,20 @@ import { GameContext, versionEchoFields } from '../utils/game-context'
 import { AiTextResult, renderAiText, Scalar } from '../utils/ai-text'
 import { PathSandboxError } from '../utils/path-sandbox'
 import { analyzeLua, Analysis, CommentSpan, Reference } from '../utils/lua-analyzer'
-import { listSiblingMods, loadModProject, ModProject, relativeTo } from '../utils/mod-project'
+import { listSiblingMods, loadModProject, MOD_DLL, MOD_ENTRY, ModProject, NATIVE_DIR, relativeTo } from '../utils/mod-project'
+import {
+  checkUe4ssImports,
+  describeDll,
+  DllInfo,
+  gameModDir,
+  inspectDll,
+  modParts,
+  ModParts,
+  nativeNewestMtime,
+  partsLabel,
+  readableSymbol,
+  Ue4ssLink,
+} from '../utils/mod-native'
 import { listInstalledMods, LoadSlot, loadSlot, readLoadOrder } from '../utils/ue4ss-mods'
 import { getBridge } from '../utils/bridge-client'
 import { findObject, isHookable, ObjectHit, suggestSimilar } from './common'
@@ -392,6 +405,74 @@ function collisionSeverity(other: ForeignMod): Severity {
   return other.slot?.enabled ? 'warn' : 'info'
 }
 
+interface NativeCheck {
+  info: DllInfo
+  link: Ue4ssLink | null
+}
+
+function checkNative(config: ServerConfig, mod: ModProject, parts: ModParts, findings: Finding[]): NativeCheck | null {
+  const at = (file: string): Pick<Finding, 'file' | 'line' | 'column'> => ({ file, line: 0, column: 0 })
+  if (!parts.dll) {
+    if (parts.native) {
+      findings.push({
+        severity: 'warn',
+        code: 'dll_not_built',
+        ...at(NATIVE_DIR),
+        message: `есть исходники ${NATIVE_DIR}/, но нет ${MOD_DLL}: нативная часть не собрана, и в игру её ставить нечем`,
+      })
+    }
+    return null
+  }
+  const info = inspectDll(`${mod.root}/${MOD_DLL}`)
+  if (!info) return null
+  if (info.machine !== 'x64') {
+    findings.push({
+      severity: 'error',
+      code: 'dll_not_x64',
+      ...at(MOD_DLL),
+      message: `${MOD_DLL}: ${info.machine}, а игра 64-битная — UE4SS её не загрузит`,
+    })
+  }
+  const link = checkUe4ssImports(`${mod.root}/${MOD_DLL}`, config.ue4ssDir)
+  if (link && link.missing.length > 0) {
+    findings.push({
+      severity: 'error',
+      code: 'dll_missing_ue4ss_symbols',
+      ...at(MOD_DLL),
+      message: `${link.missing.length} из ${link.imported} символов, которые DLL берёт из UE4SS.dll, установленная UE4SS не экспортирует — LoadLibrary откажет, и C++-часть не стартует. DLL собрана под другую версию UE4SS: пересобери под установленную. Нет: ${link.missing.slice(0, 5).map(readableSymbol).join('; ')}${link.missing.length > 5 ? ' …' : ''}`,
+      extra: { missing_mangled: link.missing.slice(0, 5).join(' ') },
+    })
+  }
+  if (parts.native) {
+    const newest = nativeNewestMtime(mod.root)
+    if (newest > info.mtimeMs) {
+      findings.push({
+        severity: 'warn',
+        code: 'dll_stale',
+        ...at(MOD_DLL),
+        message: `исходники ${NATIVE_DIR}/ новее ${MOD_DLL} на ${Math.ceil((newest - info.mtimeMs) / 60000)} мин: пересобери, иначе в игру и в релиз уйдёт старая DLL`,
+      })
+    }
+  }
+  const inGame = inspectDll(`${gameModDir(config.ue4ssDir, mod.name)}/${MOD_DLL}`)
+  if (!inGame) {
+    findings.push({
+      severity: 'info',
+      code: 'dll_not_in_game',
+      ...at(MOD_DLL),
+      message: `в каталоге игры нет ${MOD_DLL}: ww_deploy_mod положит её, подхватится при старте игры`,
+    })
+  } else if (inGame.sha !== info.sha) {
+    findings.push({
+      severity: 'info',
+      code: 'dll_differs_in_game',
+      ...at(MOD_DLL),
+      message: `в каталоге игры другая сборка DLL (sha256:${inGame.sha}): ww_deploy_mod подменит её, подхватится после перезапуска игры`,
+    })
+  }
+  return { info, link }
+}
+
 export async function handleValidateMod(ctx: GameContext, config: ServerConfig, args: ValidateModArgs): Promise<string> {
   const echo = versionEchoFields(ctx)
 
@@ -413,7 +494,8 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
     throw e
   }
 
-  if (mod.luaFiles.length === 0) {
+  const parts = modParts(mod.root, mod.meta?.entry ?? MOD_ENTRY)
+  if (mod.luaFiles.length === 0 && !parts.dll && !parts.native) {
     return renderAiText({
       reportType: 'mod_validation',
       fields: {
@@ -435,14 +517,18 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
   const resolve = classResolver(ctx)
   let dynamicPaths = 0
 
-  if (!existsSync(mod.entry)) {
+  const dllInfo = checkNative(config, mod, parts, findings)
+
+  if (!existsSync(mod.entry) && (mod.luaFiles.length > 0 || !parts.dll)) {
     findings.push({
-      severity: 'error',
+      severity: parts.dll ? 'warn' : 'error',
       code: 'entry_missing',
       file: relativeTo(mod.root, mod.entry),
       line: 0,
       column: 0,
-      message: 'точка входа Scripts/main.lua отсутствует — UE4SS не загрузит мод',
+      message: parts.dll
+        ? 'Lua-файлы есть, а точки входа Scripts/main.lua нет — UE4SS загрузит только DLL'
+        : 'точка входа Scripts/main.lua отсутствует — UE4SS не загрузит мод',
     })
   }
 
@@ -634,6 +720,16 @@ export async function handleValidateMod(ctx: GameContext, config: ServerConfig, 
       status: errors > 0 ? 'invalid' : warnings > 0 ? 'ok_with_warnings' : 'ok',
       mod: mod.name,
       mod_root: mod.root,
+      parts: partsLabel(parts),
+      ...(dllInfo ? { dll: describeDll(dllInfo.info) } : {}),
+      ...(dllInfo?.link
+        ? {
+            ue4ss_imports:
+              dllInfo.link.missing.length === 0
+                ? `${dllInfo.link.imported}, все есть в установленной UE4SS.dll`
+                : `${dllInfo.link.imported}, не хватает ${dllInfo.link.missing.length}`,
+          }
+        : {}),
       files: mod.luaFiles.length,
       hook_paths_checked: uses.length,
       dynamic_paths: dynamicPaths,

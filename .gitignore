@@ -13,6 +13,9 @@ wwmcp.config.json
 # данные игры не раздаём — всё генерируется локально
 *.usmap
 
+# снимок заголовков UE4SS под установленный коммит: bun run ue4ss-sdk
+data/ue4ss-sdk/
+
 bridge/WWBridge/Scripts/config.lua
 
 # сайдкар .NET

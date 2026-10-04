@@ -75,10 +75,11 @@ heartbeat, по которому `ww_game_status` отличает «игра з
 | | |
 |---|---|
 | `src/tools/` | по файлу на MCP-инструмент |
-| `src/scripts/` | BUILD-контур: `setup`, `dumps:pull`, `doctor`, `bridge:deploy`, память, `job-runner` — отсоединяемый исполнитель долгих операций |
+| `src/scripts/` | BUILD-контур: `setup`, `dumps:pull`, `doctor`, `bridge:deploy`, `ue4ss-sdk`, память, `job-runner` — отсоединяемый исполнитель долгих операций |
 | `src/utils/` | индекс, мост, песочница путей, отпечаток игры, работа с UE4SS, кит и Loom (`kit.ts`, `loom.ts`, `jobs.ts`, `loom-types.ts`; общий движок фолбэков подъёма — `lift-fallback.ts` и `lift-json.ts`) |
 | `bridge/` | Lua-моды: `WWBridge` (канал) и `AutoDump` (снятие дампов) |
 | `data/lib/ww/` | рантайм-библиотека модов, линкуется в `ue4ss/Mods/shared` |
+| `data/ue4ss-sdk/` | снимок заголовков UE4SS под установленный коммит для C++-модов: `include/`, `UE4SS.def` (экспорт `UE4SS.dll`, из него `lib.exe` делает `UE4SS.lib`), `manifest.json` с коммитом и флагами сборки. Не в гите, генерирует `bun run ue4ss-sdk` |
 | `data/templates/` | шаблоны `ww_scaffold_mod`; `data/templates/loom/` — шаблоны `.lm`, сервер отдаёт их ресурсами `ww://templates/loom/<имя>` |
 | `sidecar/WwParse/` | C#-сайдкар на CUE4Parse: `data` — таблицы данных по `.usmap`, `xref` — статический xref (вызовы из `ScriptBytecode` + типизированные ссылки экспортов), `json` — экспорт cooked-пакета для `ww_lift`, `jsonbatch` — то же пакетом для шага `index-lift` |
 | `dumps/`, `dist/`, `state/` | не в гите: входы сборки, профили, рабочее состояние |
@@ -145,9 +146,11 @@ UnrealEditor-Cmd); раннер снимается первым, иначе он
 
 ## Границы
 
-Сервер пишет только в песочницу: репозиторий модов, `state/` и `dist/`. Исключения четыре:
-`ww_extract_asset` с явным `dest_dir`, `ww_install_mod`, который ставит Lua-мод в
-`<ue4ssDir>/Mods/<Имя>` и правит `<ue4ssDir>/Mods/mods.txt`, `ww_loom_install`, который
+Сервер пишет только в песочницу: репозиторий модов, `state/` и `dist/`. Исключения пять:
+`ww_extract_asset` с явным `dest_dir`, `ww_install_mod`, который ставит UE4SS-мод в
+`<ue4ssDir>/Mods/<Имя>` и правит `<ue4ssDir>/Mods/mods.txt`, `ww_deploy_mod`, который кладёт
+нативную часть мода в `<ue4ssDir>/Mods/<Имя>/dlls/` и включает мод в mods.txt (Lua-часть он
+грузит мостом и в каталог игры не пишет), `ww_loom_install`, который
 кладёт pak-мод в `<saved>/mods/<Мод>/` (отдельная песочница `savedModsSandbox`: только каталог
 текущего мода), и `ww_loom_new_mod`, который создаёт новую папку `<kit>/Content/Mods/<Мод>/`
 (песочница `newModSandbox` с проверками `newModDir`: родитель — ровно `Content/Mods`, имя папки
@@ -156,7 +159,9 @@ UnrealEditor-Cmd); раннер снимается первым, иначе он
 удаляет лишь PAL, созданный после старта своего джоба, и пустую папку. Внутри песочницы
 появились зоны `state/lift/` (скретч-проекты Loom и кэш поднятых исходников), `state/jobs/`,
 `state/new-mod/` (параметры и итог скрипта создания мода) и `state/backup/` (предыдущие версии
-сборок).
+сборок). Каталог мода в игре `ww_install_mod` синхронизирует, а не сносит: загруженную игрой DLL
+Windows удалить не даёт, поэтому оба UE4SS-инструмента переименовывают её в `*.ww-old` рядом и
+убирают такие файлы при следующей записи. Каталог-ссылку (junction) они не пишут насквозь.
 
 Отдельная категория — процессы, которые сервер запускает: LoomBuild, RunUAT и
 `UnrealEditor-Cmd -run=pythonscript` со скриптом `data/loom/new_mod.py` (он сохраняет

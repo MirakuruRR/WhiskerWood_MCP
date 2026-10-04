@@ -391,7 +391,7 @@ export function analyzeLua(source: string): Analysis {
     if (node.type === 'Identifier' && node.name === 'WWRegisterHook') usesWWRegisterHook = true
 
     if (node.type === 'Identifier' && node.name === 'Utf8String') {
-      lint('utf8string', 'error', node, 'Utf8String не поддержан UE4SS на UE 5.6; текст резолви через ww_resolve_loc и передавай готовой строкой')
+      lint('utf8string', 'error', node, 'глобала Utf8String в UE4SS нет, вызов упадёт на nil: конструктор называется FUtf8String. Для текста хватает Lua-строки: FString-параметр принимает кириллицу без потерь, FText — через Conv_StringToText')
     }
 
     if (isCall(node)) {

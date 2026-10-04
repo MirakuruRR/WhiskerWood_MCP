@@ -126,11 +126,58 @@ ww_game_log source=modlog / ww_ui_tree   сработало ли, что на э
 |---|---|
 | `ww_scaffold_mod` | Каркас мода: `mod.json`, `Scripts/main.lua` из шаблона (hook / ui / keybind / diagnostic) |
 | `ww_generate_hook` | Готовый `RegisterHook` с реальной сигнатурой и распаковкой каждого параметра |
-| `ww_validate_mod` | Разбирает `.lua` в AST и сверяет каждый литеральный путь с индексом |
-| `ww_deploy_mod` | Горячая загрузка в запущенную игру через мост, со снятием прошлых хуков (живой) |
+| `ww_validate_mod` | Разбирает `.lua` в AST и сверяет каждый литеральный путь с индексом; у мода с DLL проверяет и её |
+| `ww_deploy_mod` | Dev-деплой: Lua — горячо через мост, со снятием прошлых хуков; DLL — подмена в каталоге игры (живой) |
 | `ww_package_mod` | Релизный zip: библиотека вендорится внутрь, чтобы мод работал у игрока без этого репозитория |
 | `ww_install_mod` | Ставит релиз в `<ue4ssDir>/Mods/<Имя>` из каталога или zip, с бэкапом прошлой версии и правкой mods.txt |
+
+Что попадает в пакет и в каталог игры, решает и `.gitignore` репозитория модов: файл, который мод
+пишет сам во время игры (сохранённое состояние, кэш), занесите туда. Тогда `ww_package_mod` его не
+упакует, а `ww_install_mod` при переустановке не сотрёт копию игрока.
 | `ww_lua_api` | Сигнатуры, примеры и грабли UE4SS Lua API по механизмам |
+
+### Мод с нативной частью (Lua + DLL)
+
+UE4SS-мод может нести C++-часть: `dlls/main.dll` рядом со `Scripts/main.lua` или вместо него;
+её исходники лежат в `native/` и собираются вне сервера. Инструменты различают части сами
+(поле `parts`: `lua`, `dll`, `lua+dll`), а правило у частей разное:
+
+- **Lua** перезагружается на горячую: `ww_deploy_mod` грузит её мостом из каталога разработки.
+- **DLL** в живом процессе не перезагружается. `ww_deploy_mod` кладёт её в
+  `<ue4ssDir>/Mods/<Имя>/dlls/` (занятую игрой старую — переименовывает в `*.ww-old`) и включает
+  мод в mods.txt. Если в запущенной игре DLL не та, ответ — `restart_required`, и Lua не грузится:
+  она могла бы звать функции, которых в старой DLL нет. Дальше `ww_game_process action=restart
+  wait_for=world` и снова `ww_deploy_mod`.
+
+Dev-раскладка в каталоге игры — **только `dlls/`**: Lua-копия рядом загрузилась бы из mods.txt
+вторым экземпляром поверх мостовой (`warning_double_load`). Её даёт и `ww_install_mod
+dll_only: true`. Релизная раскладка (`ww_install_mod` без флага, zip из `ww_package_mod`) — обе
+части; `native/` и мусор сборки (`.pdb`, `.obj`, `.lib`) в неё не попадают.
+
+В dev-цикле Lua исполняется в Lua-стейте моста WWBridge, а не в стейте своего мода. C++-часть,
+которая отдаёт функции в Lua через `on_lua_start(mod_name, …)`, должна регистрировать их и для
+`WWBridge` — иначе мостовая загрузка их не увидит.
+
+```
+правка Lua  → ww_validate_mod → ww_deploy_mod                         горячо
+правка C++  → сборка native/  → ww_validate_mod (dll_stale) → ww_deploy_mod
+            → restart_required → ww_game_process action=restart → ww_deploy_mod
+```
+
+`ww_validate_mod` и `ww_deploy_mod` сверяют таблицу импорта DLL с экспортом установленной
+`UE4SS.dll`. Если UE4SS не экспортирует хоть один символ, который берёт мод (DLL собрана под
+другую версию UE4SS), `LoadLibrary` откажет, и C++-часть молча не стартует. Это ловит ошибка
+`dll_missing_ue4ss_symbols`.
+
+Заголовки для сборки C++-части лежат в `data/ue4ss-sdk/` и привязаны к коммиту установленной
+UE4SS (`manifest.json`). В гит каталог не входит: на новой машине его один раз создаёт
+`bun run ue4ss-sdk`, коммит берётся из `UE4SS.log`. Это замыкание `#include` от `Mod/CppUserModBase.hpp`,
+`LuaMadeSimple/LuaMadeSimple.hpp` и `DynamicOutput/DynamicOutput.hpp`, плюс fmt той версии, что
+вкомпилирована в UE4SS. `GUI/GUI.hpp` заменён заглушкой: оригинал тянет imgui и приватный
+Unreal, а раскладку `CppUserModBase` заглушка не меняет. `UE4SS.lib` собирается из `UE4SS.def`
+командой из манифеста. fmt из `UE4SS.dll` не экспортируется, поэтому моду нужен
+`FMT_HEADER_ONLY`; остальные флаги — в `manifest.json`. После обновления UE4SS `bun run doctor`
+предупредит о расхождении коммитов, тогда снимок пересобирается `bun run ue4ss-sdk`.
 
 ## Loom
 

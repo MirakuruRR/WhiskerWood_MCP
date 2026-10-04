@@ -89,7 +89,22 @@ function checkUe4ss(cfg: ServerConfig): void {
   } else {
     const text = readFileSync(log, 'utf8')
     const version = /v\d+\.\d+\.\d+(-\d+)?/.exec(text)?.[0] ?? 'версия не определилась'
-    add('ok', `UE4SS ${version}`, `лог обновлён ${fmtTime(statSync(log).mtimeMs)}`)
+    const sha = /Git SHA #([0-9a-f]+)/.exec(text)?.[1]
+    add('ok', `UE4SS ${version}${sha ? ` (${sha})` : ''}`, `лог обновлён ${fmtTime(statSync(log).mtimeMs)}`)
+    const sdkManifest = `${import.meta.dir}/../../data/ue4ss-sdk/manifest.json`
+    if (sha && !existsSync(sdkManifest)) {
+      add('ok', 'заголовков C++-модов нет (data/ue4ss-sdk)', 'нужны только для сборки C++-части мода: bun run ue4ss-sdk')
+    } else if (sha) {
+      const sdk = JSON.parse(readFileSync(sdkManifest, 'utf8')) as { ue4ss_commit: string }
+      if (sdk.ue4ss_commit.startsWith(sha)) add('ok', `заголовки C++-модов (data/ue4ss-sdk) того же коммита UE4SS`)
+      else
+        add(
+          'warn',
+          `заголовки C++-модов от другого коммита UE4SS: ${sdk.ue4ss_commit.slice(0, 8)}, а стоит ${sha}`,
+          'C++-мод, собранный на них, может не загрузиться или упасть',
+          'bun run ue4ss-sdk',
+        )
+    }
   }
 
   const modsTxt = `${cfg.ue4ssDir}/Mods/mods.txt`

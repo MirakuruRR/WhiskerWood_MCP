@@ -321,7 +321,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Текст по ключу локализации',
       description:
-        'Ключ локализации → текст. Локализация в Whiskerwood сделана таблицами Loc_* (18 языков), а не .locres. Принимает точный ключ, шаблон ключа или слова из текста. lang по умолчанию из конфига (En,Ru), lang="all" — все языки. В Lua передавай уже готовую строку: Utf8String на 5.6 не работает.',
+        'Ключ локализации → текст. Локализация в Whiskerwood сделана таблицами Loc_* (18 языков), а не .locres. Принимает точный ключ, шаблон ключа или слова из текста. lang по умолчанию из конфига (En,Ru), lang="all" — все языки. В Lua передавай уже готовую строку: кириллица из Lua-строки проходит в FString-параметр без потерь, FText собирается через KismetTextLibrary:Conv_StringToText.',
       inputSchema: {
         key_or_pattern: z.string().describe('Ключ вида mod.desc.starvation, его часть или слова из текста'),
         lang: z.string().optional().describe('Языки через запятую (En, Ru, De, Zh-Tw, …) либо all'),
@@ -644,7 +644,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Справочник UE4SS Lua API',
       description:
-        'Сигнатуры, примеры и грабли UE4SS Lua API: хуки, поиск объектов, потоки, ввод, текст, раскладка мода. Без аргументов — оглавление по категориям. Вызывай ПЕРЕД написанием кода мода: здесь записаны отличия этой сборки (ExecuteInGameThread асинхронный, FindAllOf при нуле совпадений даёт nil, Utf8String не работает). Классы и функции самой игры ищи через ww_find_symbol.',
+        'Сигнатуры, примеры и грабли UE4SS Lua API: хуки, поиск объектов, потоки, ввод, текст, раскладка мода. Без аргументов — оглавление по категориям. Вызывай ПЕРЕД написанием кода мода: здесь записаны отличия этой сборки (ExecuteInGameThread асинхронный, FindAllOf при нуле совпадений даёт nil, глобала Utf8String нет — есть FUtf8String). Классы и функции самой игры ищи через ww_find_symbol.',
       inputSchema: {
         symbol: z.string().optional().describe('Имя символа UE4SS, например RegisterHook или ExecuteInGameThread'),
         category: z
@@ -696,7 +696,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Проверка мода',
       description:
-        'Разбирает все .lua мода в AST и сверяет с индексом: синтаксис, каждый литеральный путь RegisterHook/StaticFindObject/FindFirstOf/FindAllOf/NotifyOnNewObject, форма пути (двоеточие против точки), арность коллбэков хуков, известные грабли UE4SS. Конфликты ищет и в соседних модах репозитория, и в реально установленных в ue4ss/Mods: один и тот же хуковый путь (UE4SS сцепляет коллбэки без приоритетов) и запись в одно и то же свойство одного класса; порядок разрешения берётся из mods.txt, а для записей из ExecuteWithDelay помечается как недетерминированная гонка. Динамически собранные пути помечаются отдельно как непроверяемые. Вызывай ПЕРЕД ww_deploy_mod и после каждой правки. live: true дополнительно пробивает пути через мост в живой игре.',
+        'Разбирает все .lua мода в AST и сверяет с индексом: синтаксис, каждый литеральный путь RegisterHook/StaticFindObject/FindFirstOf/FindAllOf/NotifyOnNewObject, форма пути (двоеточие против точки), арность коллбэков хуков, известные грабли UE4SS. Конфликты ищет и в соседних модах репозитория, и в реально установленных в ue4ss/Mods: один и тот же хуковый путь (UE4SS сцепляет коллбэки без приоритетов) и запись в одно и то же свойство одного класса; порядок разрешения берётся из mods.txt, а для записей из ExecuteWithDelay помечается как недетерминированная гонка. Динамически собранные пути помечаются отдельно как непроверяемые. Если в моде есть нативная часть (dlls/main.dll, исходники native/), проверяет и её: DLL собрана, x64, не старее исходников, совпадает ли со сборкой в каталоге игры. Вызывай ПЕРЕД ww_deploy_mod и после каждой правки. live: true дополнительно пробивает пути через мост в живой игре.',
       inputSchema: {
         mod_root: z.string().describe('Каталог мода'),
         live: z.boolean().optional().describe('Дополнительно пробить пути в запущенной игре'),
@@ -712,7 +712,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Развернуть мод',
       description:
-        'Загрузить мод в запущенную игру через мост WWBridge прямо из каталога разработки, со снятием хуков предыдущей загрузки; повторный вызов перезагружает мод без перезапуска игры. Сначала прогони ww_validate_mod.',
+        'Dev-деплой мода. Lua-часть (Scripts/main.lua) грузится в запущенную игру через мост WWBridge прямо из каталога разработки, со снятием хуков предыдущей загрузки; повторный вызов перезагружает её без перезапуска игры. Нативная часть (dlls/main.dll, C++-мод UE4SS) горячо не перезагружается: инструмент кладёт её в <ue4ssDir>/Mods/<Имя>/dlls (занятую игрой прежнюю DLL переименовывает в *.ww-old) и включает мод в mods.txt, если в каталоге игры нет Lua-копии. Если в живой игре DLL не та, что в репозитории, отвечает restart_required и Lua не грузит — нужен ww_game_process action=restart и повторный вызов. Без запущенной игры DLL всё равно кладётся. Сначала прогони ww_validate_mod.',
       inputSchema: {
         mod_root: z.string().describe('Каталог мода'),
         version: versionParam,
@@ -727,7 +727,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Собрать релизный zip',
       description:
-        'Релизная сборка мода для раздачи игрокам: одна папка <Имя>/ со всеми .lua и mod.json, внутрь неё вендорится общая библиотека lib/ (Scripts/ww/*.lua) — у игрока нет WWBridge, расширяющего package.path, и без вендоринга require("ww.log") не найдётся. Рядом кладутся УСТАНОВКА.txt и INSTALL.txt (свои из корня мода или сгенерированные) — с установкой UE4SS и самого мода. Архив пишется в <modsRepo>/dist и никогда не перетирает существующий: при совпадении имени добавляется суффикс -b2, -b3. Версия берётся из mod.json, mod_version её задаёт и сохраняет обратно. Это не установка в игру — для неё ww_deploy_mod.',
+        'Релизная сборка мода для раздачи игрокам: одна папка <Имя>/ со всеми .lua, dlls/ (если у мода есть нативная часть) и mod.json; исходники native/, мусор сборки (.pdb, .obj, .lib…) и всё, что исключает .gitignore репозитория модов (файлы, которые мод пишет сам во время игры), в архив не попадают, мод из одной DLL тоже принимается, внутрь неё вендорится общая библиотека lib/ (Scripts/ww/*.lua) — у игрока нет WWBridge, расширяющего package.path, и без вендоринга require("ww.log") не найдётся. Рядом кладутся УСТАНОВКА.txt и INSTALL.txt (свои из корня мода или сгенерированные) — с установкой UE4SS и самого мода. Архив пишется в <modsRepo>/dist и никогда не перетирает существующий: при совпадении имени добавляется суффикс -b2, -b3. Версия берётся из mod.json, mod_version её задаёт и сохраняет обратно. Это не установка в игру — для неё ww_deploy_mod.',
       inputSchema: {
         mod_root: z.string().describe('Каталог мода'),
         mod_version: z.string().optional().describe('Версия релиза вида 1.2.3; по умолчанию version из mod.json или 1.0.0'),
@@ -742,13 +742,14 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Установить релиз в игру',
       description:
-        'Ставит мод в <ue4ssDir>/Mods/<Имя> из каталога (mod_root, копия — как ww_package_mod собирал бы файлы) или из готового релизного zip (как отдаёт ww_package_mod: папка "<Имя мода>/..." внутри архива). Имя берётся из mod.json, если не задано явно. Перед перезаписью существующего каталога делает бэкап в state/backup/<Имя>-<таймштамп>; если каталог есть, но не похож на мод UE4SS (нет Scripts/main.lua), без force: true отказывается перетирать. Правит mods.txt идемпотентно (enable по умолчанию true). Единственное вместе с ww_extract_asset исключение из правила "сервер пишет только в песочницу" — пишет ещё и в каталог игры: <ue4ssDir>/Mods/<Имя> и mods.txt. Live-загрузка в уже запущенную игру без перезапуска — отдельный ww_deploy_mod.',
+        'Ставит мод в <ue4ssDir>/Mods/<Имя> из каталога (mod_root, копия — как ww_package_mod собирал бы файлы) или из готового релизного zip (как отдаёт ww_package_mod: папка "<Имя мода>/..." внутри архива). Имя берётся из mod.json, если не задано явно. Перед перезаписью существующего каталога делает бэкап в state/backup/<Имя>-<таймштамп>; каталог синхронизируется, а не сносится: файлы, которые исключает .gitignore репозитория модов (состояние, которое мод пишет сам во время игры), не ставятся и не удаляются; загруженную игрой DLL Windows не даёт удалить, поэтому она переименовывается в *.ww-old, а новая DLL подхватится после перезапуска (restart_required). Если каталог есть, но не похож на мод UE4SS (нет ни Scripts/main.lua, ни dlls/main.dll), без force: true отказывается перетирать. dll_only: true ставит только dlls/ — dev-раскладка мода Lua+DLL, где Lua грузится мостом через ww_deploy_mod, а Lua-копия в игре задвоила бы хуки. Правит mods.txt идемпотентно (enable по умолчанию true). Исключение из правила "сервер пишет только в песочницу" (вместе с ww_extract_asset, ww_deploy_mod и инструментами Loom, см. ARCHITECTURE.md) — пишет ещё и в каталог игры: <ue4ssDir>/Mods/<Имя> и mods.txt. Live-загрузка в уже запущенную игру без перезапуска — отдельный ww_deploy_mod.',
       inputSchema: {
         mod_root: z.string().optional().describe('Каталог мода для установки (взаимоисключимо с zip)'),
         zip: z.string().optional().describe('Путь к релизному zip (взаимоисключимо с mod_root)'),
         name: z.string().optional().describe('Имя установки; по умолчанию — name из mod.json / имя папки в архиве'),
         enable: z.boolean().optional().describe('Включить в mods.txt, по умолчанию true'),
         force: z.boolean().optional().describe('Перезаписать существующий каталог, даже если он не похож на мод UE4SS'),
+        dll_only: z.boolean().optional().describe('Поставить только нативную часть dlls/, убрав из каталога игры остальное (dev-раскладка Lua+DLL)'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
@@ -903,7 +904,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Собрать и установить pak-мод',
       description:
-        'Cook & Install без редактора: start → status → install. action=start запускает RunUAT BuildCookRun с аргументами WWModTools джобом (идут минуты) и отвечает job_id. action=status только читает: прогресс cook, а по завершённому джобу — найденный пак мода среди pakchunk<N>-Windows.pak, итог проверок (только ассеты мода, размер меньше лимита загрузчика, имена папки/.uplugin/.pak совпадают, EngineVersion = версии движка кита) и сравнение с <saved>/mods/<Мод>: ready_to_install или installed, если там уже лежат те же файлы. Джоб смотрится только при явном job_id: status и install с одним mod_name работают по паку, который уже лежит в pakchunk, — исход прошлых cook (упал, отменён) им не мешает, а если cook этого мода идёт прямо сейчас, ответ busy с его job_id; status без аргументов показывает идущий или последний cook. action=install — единственное копирующее действие: по завершённому cook (job_id) или по уже собранному паку (mod_name) копирует <Мод>.pak и <Мод>.uplugin в <saved>/mods/<Мод>/ с бэкапом прежней версии в state/backup; если файлы уже совпадают побайтно — already_installed, ничего не копируется. start с skip_cook: true — установка уже собранного пака одним вызовом, без RunUAT (то же, что install mod_name=… без job_id). action=cancel снимает cook деревом процессов: job_id — этот джоб, mod_name — идущий или последний cook этого мода, без аргументов — любой идущий или последний. Единственный, кроме ww_install_mod и ww_extract_asset, инструмент, пишущий за пределы песочницы: ровно в <saved>/mods/<Мод> (в <кит>/Content и <кит>/Plugins не пишет). Pak-мод подхватывается только при старте игры — после установки нужен ww_game_process restart save=… wait_for=world. Индекс игры не нужен: работает и на устаревшем профиле.',
+        'Cook & Install без редактора: start → status → install. action=start запускает RunUAT BuildCookRun с аргументами WWModTools джобом (идут минуты) и отвечает job_id. action=status только читает: прогресс cook, а по завершённому джобу — найденный пак мода среди pakchunk<N>-Windows.pak, итог проверок (только ассеты мода, размер меньше лимита загрузчика, имена папки/.uplugin/.pak совпадают, EngineVersion = версии движка кита) и сравнение с <saved>/mods/<Мод>: ready_to_install или installed, если там уже лежат те же файлы. Джоб смотрится только при явном job_id: status и install с одним mod_name работают по паку, который уже лежит в pakchunk, — исход прошлых cook (упал, отменён) им не мешает, а если cook этого мода идёт прямо сейчас, ответ busy с его job_id; status без аргументов показывает идущий или последний cook. action=install — единственное копирующее действие: по завершённому cook (job_id) или по уже собранному паку (mod_name) копирует <Мод>.pak и <Мод>.uplugin в <saved>/mods/<Мод>/ с бэкапом прежней версии в state/backup; если файлы уже совпадают побайтно — already_installed, ничего не копируется. start с skip_cook: true — установка уже собранного пака одним вызовом, без RunUAT (то же, что install mod_name=… без job_id). action=cancel снимает cook деревом процессов: job_id — этот джоб, mod_name — идущий или последний cook этого мода, без аргументов — любой идущий или последний. Единственный, кроме ww_install_mod, ww_deploy_mod (DLL нативной части) и ww_extract_asset, инструмент, пишущий за пределы песочницы: ровно в <saved>/mods/<Мод> (в <кит>/Content и <кит>/Plugins не пишет). Pak-мод подхватывается только при старте игры — после установки нужен ww_game_process restart save=… wait_for=world. Индекс игры не нужен: работает и на устаревшем профиле.',
       inputSchema: {
         action: z
           .enum(['start', 'status', 'install', 'cancel'])
