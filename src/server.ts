@@ -32,7 +32,7 @@ import { handleScaffoldMod, TEMPLATES } from './tools/scaffold-mod'
 import { handleGenerateHook } from './tools/generate-hook'
 import { handleValidateMod } from './tools/validate-mod'
 import { handleDeployMod } from './tools/deploy-mod'
-import { handlePackageMod, PackageModArgs } from './tools/package-mod'
+import { handlePackageMod, IndexGameVersion, PackageModArgs } from './tools/package-mod'
 import { handleInstallMod, InstallModArgs } from './tools/install-mod'
 import { handleDiffVersions } from './tools/diff-versions'
 import { handleEventSurface } from './tools/event-surface'
@@ -734,14 +734,22 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Собрать релизный zip',
       description:
-        'Релизная сборка мода для раздачи игрокам: одна папка <Имя>/ со всеми .lua, dlls/ (если у мода есть нативная часть) и mod.json; исходники native/, мусор сборки (.pdb, .obj, .lib…) и всё, что исключает .gitignore репозитория модов (файлы, которые мод пишет сам во время игры), в архив не попадают, мод из одной DLL тоже принимается, внутрь неё вендорится общая библиотека lib/ (Scripts/ww/*.lua) — у игрока нет WWBridge, расширяющего package.path, и без вендоринга require("ww.log") не найдётся. Рядом кладутся УСТАНОВКА.txt и INSTALL.txt (свои из корня мода или сгенерированные) — с установкой UE4SS и самого мода. Архив пишется в <modsRepo>/dist и никогда не перетирает существующий: при совпадении имени добавляется суффикс -b2, -b3. Версия берётся из mod.json, mod_version её задаёт и сохраняет обратно. Это не установка в игру — для неё ww_deploy_mod.',
+        'Релизная сборка мода для раздачи игрокам: одна папка <Имя>/ со всеми .lua, dlls/ (если у мода есть нативная часть) и mod.json; исходники native/, мусор сборки (.pdb, .obj, .lib…) и всё, что исключает .gitignore репозитория модов (файлы, которые мод пишет сам во время игры), в архив не попадают, мод из одной DLL тоже принимается, внутрь неё вендорится общая библиотека lib/ (Scripts/ww/*.lua) — у игрока нет WWBridge, расширяющего package.path, и без вендоринга require("ww.log") не найдётся. Рядом кладутся УСТАНОВКА.txt и INSTALL.txt (свои из корня мода или сгенерированные) — с установкой UE4SS и самого мода. Архив пишется в <modsRepo>/dist и никогда не перетирает существующий: при совпадении имени добавляется суффикс -b2, -b3. Версия берётся из mod.json, mod_version её задаёт и сохраняет обратно. Версию игры (game_version в mod.json и строка требований в УСТАНОВКА.txt/INSTALL.txt, в том числе в своих readme мода) инструмент сам проставляет из действующего профиля индекса и сохраняет в mod.json; руками её не правят. Если индекс устарел или не собран, остаётся версия из mod.json, а в ответе — предупреждение. Это не установка в игру — для неё ww_deploy_mod.',
       inputSchema: {
         mod_root: z.string().describe('Каталог мода'),
         mod_version: z.string().optional().describe('Версия релиза вида 1.2.3; по умолчанию version из mod.json или 1.0.0'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
-    wrapPlain((args: PackageModArgs) => handlePackageMod(config, args)),
+    wrapPlain(async (args: PackageModArgs) => {
+      let index: IndexGameVersion
+      try {
+        index = { version: (await createGameContext(config)).gameVersion }
+      } catch (e) {
+        index = { version: null, reason: (e instanceof Error ? e.message : String(e)).split('\n')[0] }
+      }
+      return handlePackageMod(config, args, index)
+    }),
   )
 
   registerTool(

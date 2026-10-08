@@ -13,6 +13,8 @@ export interface PackageModArgs {
   mod_version?: string
 }
 
+export type IndexGameVersion = { version: string } | { version: null; reason: string }
+
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', '.vscode', '.idea'])
 const SKIP_FILE = /(\.(log|bak|orig|tmp|zip|7z|rar)$|^\.|~$|^Thumbs\.db$)/i
 const README_RU = ['УСТАНОВКА.txt']
@@ -32,6 +34,7 @@ const SIGNATURE = [
   '       return MatchAddress',
   '   end',
 ]
+const GAME_VERSION_LINE_RE = /^(- Whiskerwood )\d+(?:\.\d+){1,3}([ \t]*\r?)$/m
 const VERSION_RE = /^\d+(\.\d+){0,3}$/
 const DEFAULT_VERSION = '1.0.0'
 
@@ -112,6 +115,11 @@ function vendorLibs(config: ServerConfig, sources: string[]): Vendored {
   return { entries, modules: modules.sort(), missing }
 }
 
+function shownGameVersion(mod: ModProject, fallback: string): string {
+  const v = mod.meta?.game_version
+  return v && v !== 'unknown' ? v : fallback
+}
+
 function installNoteRu(mod: ModProject, version: string, parts: ModParts): string {
   const title = `${mod.name} ${version} — мод для Whiskerwood`
   const lines = [title, '='.repeat(title.length)]
@@ -120,7 +128,7 @@ function installNoteRu(mod: ModProject, version: string, parts: ModParts): strin
     '',
     'Требования',
     '----------',
-    `- Whiskerwood ${mod.meta?.game_version ?? 'см. страницу мода'}`,
+    `- Whiskerwood ${shownGameVersion(mod, 'см. страницу мода')}`,
     '- UE4SS, установленный в игру (как — ниже)',
     ...(parts.dll
       ? [
@@ -183,7 +191,7 @@ function installNoteEn(mod: ModProject, version: string, parts: ModParts): strin
     '',
     'Requirements',
     '------------',
-    `- Whiskerwood ${mod.meta?.game_version ?? 'see the mod page'}`,
+    `- Whiskerwood ${shownGameVersion(mod, 'see the mod page')}`,
     '- UE4SS installed into the game (see below)',
     ...(parts.dll
       ? [
@@ -238,10 +246,17 @@ function installNoteEn(mod: ModProject, version: string, parts: ModParts): strin
   return lines.join('\r\n')
 }
 
-// Свой readme мода несёт копию сигнатуры, и после патча движка она молча устаревает
-function refreshSignature(text: string): { text: string; refreshed: boolean } {
-  const next = text.replace(AOB_IN_TEXT_RE, `$1${SIGNATURE_AOB}$2`)
-  return { text: next, refreshed: next !== text }
+// Свой readme мода несёт копию сигнатуры и версии игры, и после патча они молча устаревают
+function refreshReadme(text: string, gameVersion: string): { text: string; signature: boolean; gameVersion: boolean } {
+  const signed = text.replace(AOB_IN_TEXT_RE, `$1${SIGNATURE_AOB}$2`)
+  const next = gameVersion === 'unknown' ? signed : signed.replace(GAME_VERSION_LINE_RE, `$1${gameVersion}$2`)
+  return { text: next, signature: signed !== text, gameVersion: next !== signed }
+}
+
+function readmeState(own: string, r: { signature: boolean; gameVersion: boolean }): string {
+  if (!own) return 'сгенерирован'
+  const fixed = [r.signature ? 'сигнатура' : '', r.gameVersion ? 'версия игры' : ''].filter(Boolean)
+  return fixed.length > 0 ? `взят из мода, в архиве обновлены: ${fixed.join(', ')}` : 'взят из мода'
 }
 
 function pickArchiveName(distDir: string, base: string): { file: string; bumped: boolean } {
@@ -253,7 +268,7 @@ function pickArchiveName(distDir: string, base: string): { file: string; bumped:
   return { file: `${base}-${Date.now()}.zip`, bumped: true }
 }
 
-export function handlePackageMod(config: ServerConfig, args: PackageModArgs): string {
+export function handlePackageMod(config: ServerConfig, args: PackageModArgs, index: IndexGameVersion): string {
   let mod: ModProject
   try {
     mod = loadModProject(config, args.mod_root)
@@ -296,6 +311,10 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
   if (!VERSION_RE.test(version)) {
     return report({ status: 'bad_version', mod_version: version, hint: 'версия вида 1.0 или 1.2.3' })
   }
+  const loaded = mod.meta
+  const gameVersion = index.version ?? loaded.game_version
+  const meta = { ...loaded, version, game_version: gameVersion }
+  mod = { ...mod, meta }
 
   const gitignored: string[] = []
   const files = collectFiles(mod.root, gitignored)
@@ -354,14 +373,14 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
     entries.push({ path: `${mod.name}/${rel}`, data: readFileSync(`${mod.root}/${rel}`) })
   }
 
-  const shipped = { ...mod.meta, version, packaged_at: new Date().toISOString() }
+  const shipped = { ...meta, packaged_at: new Date().toISOString() }
   entries.push({
     path: `${mod.name}/${MOD_MANIFEST}`,
     data: Buffer.from(`${JSON.stringify(shipped, null, 2)}\n`, 'utf8'),
   })
   for (const e of vendored.entries) entries.push({ path: `${mod.name}/${e.path}`, data: e.data })
-  const ru = refreshSignature(readmeRu)
-  const en = refreshSignature(readmeEn)
+  const ru = refreshReadme(readmeRu, gameVersion)
+  const en = refreshReadme(readmeEn, gameVersion)
   // BOM: файл открывают блокнотом, без него кириллица читается как cp1251
   const withBom = (text: string): Buffer =>
     Buffer.from(text.startsWith('﻿') ? text : `﻿${text}`, 'utf8')
@@ -375,16 +394,20 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
   const zip = createZip(entries)
   writeFileSync(archive, zip)
 
-  let manifestState = 'без изменений'
-  if (mod.meta.version !== version) {
-    writeFileSync(`${mod.root}/${MOD_MANIFEST}`, `${JSON.stringify({ ...mod.meta, version }, null, 2)}\n`, 'utf8')
-    manifestState = `version=${version} записан в ${MOD_MANIFEST}`
-  }
+  const written = [
+    loaded.version !== version ? `version=${version}` : '',
+    loaded.game_version !== gameVersion ? `game_version=${gameVersion}` : '',
+  ].filter(Boolean)
+  if (written.length > 0) writeFileSync(`${mod.root}/${MOD_MANIFEST}`, `${JSON.stringify(meta, null, 2)}\n`, 'utf8')
 
   return report({
     status: 'ok',
     mod: mod.name,
     version,
+    game_version: gameVersion,
+    game_version_source: index.version !== null
+      ? 'профиль индекса'
+      : `${MOD_MANIFEST}: индекс недоступен (${index.reason}) — после /ww-update-index собери пакет заново`,
     archive,
     size_kb: Math.round((zip.length / 1024) * 10) / 10,
     files: entries.length,
@@ -396,17 +419,17 @@ export function handlePackageMod(config: ServerConfig, args: PackageModArgs): st
       : {}),
     ...(gitignored.length > 0 ? { excluded_by_gitignore: gitignored.slice(0, 10).join(', ') + (gitignored.length > 10 ? ` и ещё ${gitignored.length - 10}` : '') } : {}),
     vendored_libs: vendored.modules.length > 0 ? vendored.modules.join(', ') : 'нет',
-    readme_ru: !readmeRu ? 'сгенерирован' : ru.refreshed ? 'взят из мода, сигнатура в архиве заменена на текущую' : 'взят из мода',
-    readme_en: !readmeEn ? 'сгенерирован' : en.refreshed ? 'взят из мода, сигнатура в архиве заменена на текущую' : 'взят из мода',
-    manifest: manifestState,
+    readme_ru: readmeState(readmeRu, ru),
+    readme_en: readmeState(readmeEn, en),
+    manifest: written.length > 0 ? `${written.join(', ')} записано в ${MOD_MANIFEST}` : 'без изменений',
     ...(picked.bumped
       ? {
           name_collision: `${mod.name}-${version}.zip уже лежит в dist, архив назван ${picked.file}`,
           hint: 'подними mod_version, если это действительно новый релиз',
         }
       : {}),
-    ...(ru.refreshed || en.refreshed
-      ? { readme_hint: 'в readme мода устаревшая сигнатура StaticConstructObject — обнови и исходный файл, а не только архив' }
+    ...(ru.signature || en.signature || ru.gameVersion || en.gameVersion
+      ? { readme_hint: 'в readme мода устарели сигнатура StaticConstructObject или версия игры — обнови и исходный файл, а не только архив' }
       : {}),
     ...(bridgeOnlyHooks
       ? {
