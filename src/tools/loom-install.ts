@@ -30,7 +30,7 @@ export interface LoomInstallArgs {
 
 const REPORT_TYPE = 'loom_install'
 const MOD_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
-const PAK_LIMIT_BYTES = 123_999_999
+export const PAK_LIMIT_BYTES = 123_999_999
 const NEXT_RESTART = 'ww_game_process restart save=<сохранение> wait_for=world — pak-мод подхватывается только при старте игры'
 
 const MOUNT_RE = /Listing .* with mount point "(.*)"/

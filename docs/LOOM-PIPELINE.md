@@ -115,8 +115,11 @@
      `description`, `changenote`.
    - Загрузка: `steamcmd +login <user> +workshop_build_item <vdf> +quit`. После первой
      загрузки id мода записывается в `.vdf`.
-   - Готовый пример: `<kit>/Workshop/research_notifier/`. `sync.bat` копирует файлы из
-     `<saved>/mods`, `upload.bat` запускает загрузку.
+   - Папку `<kit>/Workshop/<Mod>/` собирает `bun run workshop:create <Mod>` (скилл
+     `/steam-create-workshop`): `content/` из `<saved>/mods`, шаблонный `.vdf`, заглушка
+     превью, `sync.bat` копирует файлы из `<saved>/mods`, `upload.bat` запускает загрузку.
+     Повторный запуск обновляет `content/` и не трогает `.vdf` с `publishedfileid`; тексты,
+     превью и загрузка — на человеке.
 
 ## loom-mcp
 

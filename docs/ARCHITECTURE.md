@@ -75,7 +75,7 @@ heartbeat, по которому `ww_game_status` отличает «игра з
 | | |
 |---|---|
 | `src/tools/` | по файлу на MCP-инструмент |
-| `src/scripts/` | BUILD-контур: `setup`, `dumps:pull`, `doctor`, `bridge:deploy`, `ue4ss-sdk`, память, `job-runner` — отсоединяемый исполнитель долгих операций |
+| `src/scripts/` | BUILD-контур: `setup`, `dumps:pull`, `doctor`, `bridge:deploy`, `ue4ss-sdk`, `workshop:create`, память, `job-runner` — отсоединяемый исполнитель долгих операций |
 | `src/utils/` | индекс, мост, песочница путей, отпечаток игры, работа с UE4SS, кит и Loom (`kit.ts`, `loom.ts`, `jobs.ts`, `loom-types.ts`; общий движок фолбэков подъёма — `lift-fallback.ts` и `lift-json.ts`) |
 | `bridge/` | Lua-моды: `WWBridge` (канал) и `AutoDump` (снятие дампов) |
 | `data/lib/ww/` | рантайм-библиотека модов, линкуется в `ue4ss/Mods/shared` |
