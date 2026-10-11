@@ -38,6 +38,13 @@ const NEW_MOD = (goal: string, modName: string) => `Собери мод Whiskerw
 8. ww_deploy_mod при запущенной игре, затем ww_game_log и ww_game_eval —
    убедись, что мод не просто загрузился, а сработал. UI и визуал правь по ww_ui_tree:
    он показывает структуру и значения родных панелей, ручной обход виджетов запрещён.
+   Кадр для глаза и клик по цели, найденной на кадре, — ww_screenshot и ww_click:
+   x, y — нативные пиксели окна, а координату, снятую с вложенной картинки, дели на
+   attach_scale (window, attach_size и attach_scale приходят в ответе ww_screenshot; с crop
+   сначала дели, потом прибавляй crop.x, crop.y);
+   условия проверки нагоняй через ww_game_console (Arco_GiveResource, Arco_UnlockAll)
+   и ww_game_control (пауза, скорость, конец дня). Игра упала — ww_crash_report:
+   он назовёт виновный мод, файл и строку Lua.
 9. Когда мод готов — ww_validate_mod, до нуля ошибок. Предупреждения либо чини, либо объясни,
    почему они допустимы именно здесь, и погаси принятое через -- ww:ignore. Повторный прогон
    после правок — с since_last: true.
@@ -115,9 +122,12 @@ const NEW_LOOM_MOD = (goal: string, modName: string) => `Собери мод Whi
    правки .lm — тот же start с build=true resume=true: validate, сборка, cook, установка,
    игра с сейвом без паузы; на ошибке validate или сборки цикл останавливается до cook.
 13. Проверка в игре: ww_game_log с source=modlog по префиксу мода (LogMessage — единственный
-   канал из shipping-сборки), ww_ui_tree и ww_screenshot для HUD, ww_trace_calls по своим
-   функциям. Ошибки Blueprint игра глушит молча: «мод не работает» без строк в modlog — тоже
-   результат, и причину ищи по шагам 9–11.
+   канал из shipping-сборки), ww_ui_tree и ww_screenshot для HUD, ww_click по цели с кадра
+   (x, y — нативные пиксели окна: снятую с вложения координату дели на attach_scale из ответа
+   ww_screenshot), ww_mod_state — переменные живого экземпляра мода, ww_trace_calls по своим
+   функциям. Упала игра после установки .pak — ww_crash_report: движковый дамп и хвост лога
+   до краша. Ошибки Blueprint игра глушит молча:
+   «мод не работает» без строк в modlog — тоже результат, и причину ищи по шагам 9–11.
 14. ww_memory_add — запиши то, что нельзя вывести из кода: decision на каждую выбранную точку
    реакции, pitfall на каждую потраченную впустую попытку (с тегом-идентификатором: он станет
    триггером линта), todo на всё непроверенное. mod_name: ${modName} ставь только на записи про
@@ -149,8 +159,10 @@ const PORT_TO_LOOM = (luaMod: string, modName: string) => `Перенеси Lua-
 5. Точный вызов бери из ww_get_function: поле loom_call уже собрано под Loom, копируй его
    буквально. Цепочку проверяй вживую: ww_call с bp_only: true и ww_trace_calls.
 6. Сверяй поведение с оригиналом, пока он жив: ww_validate_mod (пути хуков целы), ww_game_eval,
-   ww_game_log (source=ue4ss для Lua-мода и source=modlog для Loom-мода), ww_ui_tree. Одно и то
-   же действие на одном сейве должно давать одинаковый результат в обоих логах.
+   ww_game_log (source=ue4ss для Lua-мода и source=modlog для Loom-мода), ww_ui_tree, внешний вид —
+   кадром ww_screenshot с кликом ww_click по цели, переменные живого Blueprint-экземпляра —
+   ww_mod_state. Краш любой из сторон разбирай через ww_crash_report, прежде чем гадать.
+   Одно и то же действие на одном сейве должно давать одинаковый результат в обоих логах.
 7. Дальше цикл Loom-мода, как в промпте ww:new-loom-mod: папку мода с PAL, .uplugin и
    заготовками создаёт ww_loom_new_mod action=create mod_name=${modName} (при открытом
    редакторе — «New mod...» в нём), заготовки .lm — ресурсы этого MCP-сервера ${T}/<имя>
@@ -175,11 +187,15 @@ const FIX_AFTER_PATCH = (modsGlob: string) => `Игра обновилась. П
 3. Когда профиль свежий: ww_diff_versions(from: прошлая версия, to: новая) — если обе
    собраны. Смотри в первую очередь на signature_changed и removed без пометки
    blueprint: у BP-классов отсутствие в дампе означает «не было загружено», а не «удалено».
+   Если свежего дампа нет, сними его из запущенной игры через ww_capture_dumps (загруженный
+   мир, без перезапуска); полный дамп из главного меню неполный — UI-классов в нём не будет.
 4. По каждому Lua-моду: ww_validate_mod. Пути, ставшие not_found, перепроверь через
    ww_verify_hook и, при запущенной игре, с live: true — BP-класс может быть просто
    не загружен, и это не поломка. У мода с dlls/main.dll индекс нативную часть не проверяет:
    AOB-сигнатуры и смещения полей ломаются молча. Смотри её строки в ww_game_log после
    перезапуска игры; чинится пересборкой native/, затем ww_deploy_mod и перезапуск.
+   Если игра падает — ww_crash_report: по умолчанию он читает отчёт WWCrashGuard (виновный мод,
+   файл и строка Lua), движковый дамп UECC добавляется через engine: true.
 5. По каждому моду на Loom (Blueprint, .pak) — ww_loom_status. Читай поля, а не общий вердикт:
    kit_classes_missing_from_game или kit_functions_missing_from_game > 0 — кит отстал от патча,
    и Loom соберёт мод против несуществующих сигнатур; functions_params_differ > 0 — разошёлся
@@ -197,6 +213,8 @@ const FIX_AFTER_PATCH = (modsGlob: string) => `Игра обновилась. П
    не переписывай логику мода заодно.
 7. После правок — ww_deploy_mod с проверкой через ww_game_log, если игра запущена, и
    ww_validate_mod с since_last: true, чтобы убедиться, что ушли именно сломанные пути.
+   Внешний вид после правки — кадром ww_screenshot (и ww_click по цели с кадра), переменные
+   живого Blueprint-мода — ww_mod_state.
    Релиз Lua-мода — ww_package_mod: game_version он сам берёт из свежего индекса и пишет в
    mod.json, вручную её не поднимай.
 8. Память приведи в соответствие с новой версией: ww_memory_invalidate на записи,

@@ -19,7 +19,7 @@
 MCP-сервер сессии запущен на коде, который был при её старте: новый или изменённый инструмент
 проверяй обвязкой (`createServer` + `InMemoryTransport`, как в `src/scripts/smoke-client.ts`),
 временные скрипты клади в скретч, а не в `state/`. Пересборка того же профиля индекса —
-`ww_index_release`, затем `bun run setup --force`.
+`ww_index_status action=release`, затем `bun run setup --force`.
 
 Знание об игре живёт в памяти сервера, а не в этом файле: до разведки — `ww_memory_search`
 и `ww_lua_api`, после работы — `ww_memory_add`. Перечни инструментов и факты про отдельные

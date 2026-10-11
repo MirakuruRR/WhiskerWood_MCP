@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { ServerConfig } from '../config'
 import { Scalar } from './ai-text'
-import { findGameProcess, readState } from './game-process'
+import { findGameProcess, readState, ProcInfo } from './game-process'
 import { SESSION, SessionInfo } from './session-id'
 
 export { SESSION }
@@ -47,17 +47,20 @@ export interface GameOwnership {
   fields: Record<string, Scalar>
 }
 
-/** Чья запущенная игра: этой сессии, другой сессии MCP или запущена мимо MCP. */
-export function gameOwnership(config: ServerConfig): GameOwnership {
-  const proc = findGameProcess(config)
-  if (!proc) return { conflict: 'none', fields: {} }
+/**
+ * Чья запущенная игра: этой сессии, другой сессии MCP или запущена мимо MCP.
+ * `proc` — уже найденный процесс, чтобы не искать его второй раз за вызов.
+ */
+export function gameOwnership(config: ServerConfig, proc?: ProcInfo | null): GameOwnership {
+  const running = proc === undefined ? findGameProcess(config) : proc
+  if (!running) return { conflict: 'none', fields: {} }
   const state = readState(config)
   const fields: Record<string, Scalar> = {}
   const launchedByMcp =
     typeof state.launchedAt === 'number' &&
-    proc.startedAt > 0 &&
-    proc.startedAt >= state.launchedAt - 5_000 &&
-    proc.startedAt <= state.launchedAt + LAUNCH_MATCH_MS
+    running.startedAt > 0 &&
+    running.startedAt >= state.launchedAt - 5_000 &&
+    running.startedAt <= state.launchedAt + LAUNCH_MATCH_MS
   fields.game_launched_by = !launchedByMcp
     ? 'не через MCP (вручную, Steam или другой стенд)'
     : state.launchedBy

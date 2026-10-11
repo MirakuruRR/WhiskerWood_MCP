@@ -155,14 +155,20 @@ export async function handleScreenshot(
   const attachBytes = statSync(post.attach).size
   fields.status = 'ok'
   fields.mode = usedMode
+  fields.window = post.window
   fields.file = post.master
   fields.bytes = masterBytes
   fields.attach_file = post.attach
   fields.attach_mime = post.attachMime
   fields.attach_bytes = attachBytes
+  fields.attach_size = post.attachSize
+  fields.attach_scale = post.attachScale
   fields.res_role = usedMode === 'engine' ? 'render' : 'attach_box'
   if (args.res !== undefined) fields.res = args.res
-  if (args.crop) fields.crop = `${args.crop.x},${args.crop.y},${args.crop.w},${args.crop.h}`
+  if (args.crop) {
+    fields.crop = `${args.crop.x},${args.crop.y},${args.crop.w},${args.crop.h}`
+    fields.crop_pixels = 'native'
+  }
 
   let pngBase64: string | undefined
   let mime: ScreenshotOutcome['mime']

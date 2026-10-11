@@ -23,7 +23,7 @@ export async function handleClick(ctx: GameContext | null, config: ServerConfig,
   const proc = findGameProcess(config)
   if (!proc) return renderAiText({ reportType: 'click', fields: { ...fields, status: 'game_not_running' } })
   if (args.takeover !== true) {
-    const own = gameOwnership(config)
+    const own = gameOwnership(config, proc)
     if (own.conflict === 'other_session') {
       return renderAiText({ reportType: 'click', fields: { ...fields, status: 'owned_by_other_session', ...own.fields, hint: ownershipHint(own, 'click') } })
     }
@@ -33,7 +33,7 @@ export async function handleClick(ctx: GameContext | null, config: ServerConfig,
   if (!res.ok) {
     const hint =
       res.status === 'outside'
-        ? 'точка вне окна игры: координаты — пиксели кадра ww_screenshot mode=window (от левого верхнего угла окна)'
+        ? 'точка вне окна игры: x, y — нативные пиксели окна (от его левого верхнего угла), а не пиксели вложения; пересчёт — по window и attach_scale из ответа ww_screenshot'
         : res.status === 'minimized'
           ? 'окно игры свёрнуто: разверни его, иначе Slate клик не получит'
           : res.status === 'no_game_window'

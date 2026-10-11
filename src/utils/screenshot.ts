@@ -106,6 +106,9 @@ export interface PostProcessResult {
   master: string
   attach: string
   attachMime: 'image/png' | 'image/jpeg'
+  window: string
+  attachSize: string
+  attachScale: number
   error?: string
 }
 
@@ -156,13 +159,14 @@ export function postProcessScreenshot(
     `$src='${src}';$cx=${c ? c.x : -1};$cy=${c ? c.y : 0};$cw=${c ? c.w : 0};$ch=${c ? c.h : 0};` +
     `$om='${outMaster}';$oa='${outAttach}';$bw=${boxW};$bh=${boxH};$limit=${limitBytes};` +
     `$img=[System.Drawing.Image]::FromFile($src);$work=$img;$master=$src;` +
+    `'window='+$img.Width+'x'+$img.Height;` +
     `if($cx -ge 0){$bx=$cx;$by=$cy;$wd=[Math]::Min($img.Width-$bx,$cw);$ht=[Math]::Min($img.Height-$by,$ch);` +
     `if($wd -le 0 -or $ht -le 0 -or $bx -ge $img.Width -or $by -ge $img.Height){'crop_out_of_bounds';exit 1};` +
     `$rect=New-Object System.Drawing.Rectangle $bx,$by,$wd,$ht;` +
     `$work=([System.Drawing.Bitmap]$img).Clone($rect,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb);` +
     `$work.Save($om,[System.Drawing.Imaging.ImageFormat]::Png);$master=$om};` +
     `'master='+$master;` +
-    `if(($cx -ge 0) -and ((Get-Item $master).Length -le $limit)){'attach='+$master;'attach_mime=image/png'}` +
+    `if(($cx -ge 0) -and ((Get-Item $master).Length -le $limit)){'attach='+$master;'attach_mime=image/png';'attach_size='+$work.Width+'x'+$work.Height;'attach_scale=1'}` +
     `else{$scale=[Math]::Min(1.0,[Math]::Min($bw/$work.Width,$bh/$work.Height));` +
     `$nw=[int][Math]::Max(1.0,$work.Width*$scale);$nh=[int][Math]::Max(1.0,$work.Height*$scale);` +
     `$dst=New-Object System.Drawing.Bitmap $nw,$nh;$g=[System.Drawing.Graphics]::FromImage($dst);` +
@@ -171,7 +175,8 @@ export function postProcessScreenshot(
     `$codec=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' };` +
     `$ep=New-Object System.Drawing.Imaging.EncoderParameters 1;` +
     `$ep.Param[0]=New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality,[long]82);` +
-    `$dst.Save($oa,$codec,$ep);$g.Dispose();$dst.Dispose();'attach='+$oa;'attach_mime=image/jpeg'};` +
+    `$dst.Save($oa,$codec,$ep);$g.Dispose();$dst.Dispose();'attach='+$oa;'attach_mime=image/jpeg';` +
+    `'attach_size='+$nw+'x'+$nh;'attach_scale='+[Math]::Round($nw/$work.Width,4).ToString([System.Globalization.CultureInfo]::InvariantCulture)};` +
     `if($work -ne $img){$work.Dispose()};$img.Dispose();'ok'`
   const p = Bun.spawnSync(['powershell', '-NoProfile', '-NonInteractive', '-Command', script], {
     stdout: 'pipe',
@@ -180,8 +185,26 @@ export function postProcessScreenshot(
   const stdout = new TextDecoder().decode(p.stdout).trim()
   const stderr = new TextDecoder().decode(p.stderr).trim()
   if (p.exitCode !== 0 || !stdout.split(/\r?\n/).includes('ok')) {
-    return { ok: false, master: src, attach: '', attachMime: 'image/jpeg', error: (stderr || stdout).replace(/\s+/g, ' ').slice(0, 300) }
+    return {
+      ok: false,
+      master: src,
+      attach: '',
+      attachMime: 'image/jpeg',
+      window: '',
+      attachSize: '',
+      attachScale: 1,
+      error: (stderr || stdout).replace(/\s+/g, ' ').slice(0, 300),
+    }
   }
   const line = (key: string) => new RegExp(`^${key}=(.*)$`, 'm').exec(stdout)?.[1]?.trim() ?? ''
-  return { ok: true, master: line('master'), attach: line('attach'), attachMime: line('attach_mime') === 'image/png' ? 'image/png' : 'image/jpeg' }
+  const rawScale = Number(line('attach_scale'))
+  return {
+    ok: true,
+    master: line('master'),
+    attach: line('attach'),
+    attachMime: line('attach_mime') === 'image/png' ? 'image/png' : 'image/jpeg',
+    window: line('window'),
+    attachSize: line('attach_size'),
+    attachScale: Number.isFinite(rawScale) && rawScale > 0 ? rawScale : 1,
+  }
 }

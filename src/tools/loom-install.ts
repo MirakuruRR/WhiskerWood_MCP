@@ -55,6 +55,7 @@ const MAX_BUILD_WAIT_MS = 300_000
 const COPY_ATTEMPTS = 5
 const COPY_RETRY_MS = 1_500
 const MAX_COOK_WAIT_MS = 600_000
+const JOB_TIMEOUT_MS = 30 * 60_000
 const POLL_MS = 1_000
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -746,6 +747,11 @@ function jobModName(job: JobRecord): string | null {
   return typeof mod === 'string' && mod.length > 0 ? mod : null
 }
 
+/** Лимит времени джоба в отчёте: у джобов без ограничения (timeoutMs 0) поля нет. */
+function jobTimeoutField(job: JobRecord): Record<string, Scalar> {
+  return job.timeoutMs > 0 ? { job_timeout_min: Math.round(job.timeoutMs / 60_000) } : {}
+}
+
 function cookJobs(config: ServerConfig, modName: string | null): JobRecord[] {
   const want = modName?.toLowerCase() ?? null
   return listJobs(config, 50).filter((j) => j.kind === 'cook' && (want === null || jobModName(j)?.toLowerCase() === want))
@@ -975,7 +981,7 @@ async function startAction(config: ServerConfig, args: LoomInstallArgs): Promise
     cmd: ['cmd', '/c', bat, ...cookArgs(kit)],
     cwd: kit.kitDir,
     project: kit.uproject,
-    timeoutMs: 0,
+    timeoutMs: JOB_TIMEOUT_MS,
   })
   if (started.status === 'busy' && started.running) return busyReport(config, started.running, modName)
   if (started.status !== 'started' || !started.job) {
@@ -994,6 +1000,7 @@ async function startAction(config: ServerConfig, args: LoomInstallArgs): Promise
       status: 'cooking',
       mod: modName,
       job_id: id,
+      ...jobTimeoutField(started.job),
       log: started.job.logPath,
       cwd: kit.kitDir,
       pak_output: kit.pakOutputDir,
@@ -1121,6 +1128,7 @@ function unfinishedCookReport(config: ServerConfig, job: JobRecord, modName: str
         mod,
         job_id: job.id,
         elapsed_s: elapsed,
+        ...jobTimeoutField(job),
         log_lines: p?.lines ?? 0,
         progress: p?.progress ?? '',
         ...(action === 'install' ? { note: 'cook ещё идёт: ставить нечего, ничего не скопировано' } : {}),
@@ -1135,6 +1143,7 @@ function unfinishedCookReport(config: ServerConfig, job: JobRecord, modName: str
       mod,
       job_id: job.id,
       elapsed_s: elapsed,
+      ...jobTimeoutField(job),
       hint: `cook прерван: pakchunk мог остаться недописанным — повтори action=start; что лежит в паке сейчас, покажет action=status mod_name=${modName || '<Мод>'} без job_id`,
     })
   }
@@ -1148,6 +1157,7 @@ function unfinishedCookReport(config: ServerConfig, job: JobRecord, modName: str
         job_status: job.status,
         exit_code: job.exitCode ?? -1,
         elapsed_s: elapsed,
+        ...jobTimeoutField(job),
         error: job.error ?? '',
         next: `хвост лога ниже: RunUAT мог упасть на cook, а мог на сборке; после правки — снова action=start. Пак прошлого удачного cook проверит action=status mod_name=${modName || '<Мод>'} без job_id`,
       },

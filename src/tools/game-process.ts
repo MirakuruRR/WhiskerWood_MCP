@@ -3,7 +3,7 @@ import { GameContext } from '../utils/game-context'
 import { getBridge } from '../utils/bridge-client'
 import { lastError } from '../utils/ue4ss-log'
 import { renderAiText, AiTextResult, Scalar } from '../utils/ai-text'
-import { echoFields, statusFields } from './bridge-common'
+import { echoFields, probeBridge } from './bridge-common'
 import {
   enterPlayChunk,
   findGameProcess,
@@ -76,10 +76,7 @@ function exitFields(config: ServerConfig, state: ProcessState): Record<string, S
 }
 
 async function bridgeFields(config: ServerConfig): Promise<Record<string, Scalar>> {
-  const bridge = getBridge(config)
-  const st = await bridge.readStatusStable()
-  if (!bridge.isAlive(st)) return { bridge: 'not_responding' }
-  return { bridge: 'alive', ...statusFields(st!) }
+  return (await probeBridge(config)).fields
 }
 
 async function loadSaveFields(config: ServerConfig, save: string): Promise<Record<string, Scalar>> {
@@ -245,16 +242,26 @@ export async function handleGameProcess(
     const proc = findGameProcess(config)
     const state = readState(config)
     if (typeof state.modlogOffset === 'number') fields.modlog_offset = state.modlogOffset
+    const probe = await probeBridge(config)
     if (proc) {
       fields.status = 'running'
-      Object.assign(fields, procFields(proc), await bridgeFields(config), gameOwnership(config).fields)
-      if (fields.bridge === 'not_responding') {
-        fields.hint = 'процесс жив, но мост молчит: UE4SS ещё грузится, либо WWBridge не включён в mods.txt'
+      Object.assign(fields, procFields(proc), probe.fields, gameOwnership(config, proc).fields)
+      if (!probe.alive) {
+        fields.hint = probe.st
+          ? 'процесс жив, но мост молчит: UE4SS ещё грузится, либо WWBridge не включён в mods.txt'
+          : 'процесс жив, но мост ни разу не стартовал: выполните `bun run bridge:deploy` и проверьте WWBridge в mods.txt'
       }
       if (state.save) fields.launched_save = state.save
     } else {
       fields.status = 'not_running'
-      Object.assign(fields, exitFields(config, state))
+      Object.assign(fields, probe.fields, exitFields(config, state))
+      if (!fields.hint) {
+        fields.hint = probe.alive
+          ? 'процесса нет, а heartbeat моста ещё свежий: игра закрылась только что, повторите status'
+          : probe.st
+            ? 'игра закрыта, heartbeat моста устарел — это ожидаемо; мост молчит и при живом процессе — смотрите ww_game_status'
+            : 'мост ни разу не стартовал: выполните `bun run bridge:deploy`, затем запустите игру'
+      }
     }
     const latest = listSaves(config)[0]
     if (latest) {

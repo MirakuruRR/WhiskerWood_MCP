@@ -40,12 +40,16 @@ export function handleGetDataTable(ctx: GameContext, args: GetDataTableArgs): st
   const echo = versionEchoFields(ctx)
 
   if (!args.name && !args.row_pattern && !args.row) {
+    const total = (ctx.db.query('SELECT COUNT(*) c FROM datatables').get() as { c: number }).c
     const tables = ctx.db
-      .query('SELECT name, asset_path, row_struct, row_count, kind FROM datatables ORDER BY name')
-      .all() as TableRow[]
+      .query('SELECT name, asset_path, row_struct, row_count, kind FROM datatables ORDER BY name LIMIT ?')
+      .all(limit) as TableRow[]
     return renderAiText({
       reportType: 'datatable_list',
-      fields: { ...echo, status: 'ok', total_found: tables.length },
+      fields: { ...echo, status: 'ok' },
+      truncated: total > tables.length,
+      totalFound: total,
+      limit,
       results: tables.map((t) => ({
         fields: {
           name: t.name,

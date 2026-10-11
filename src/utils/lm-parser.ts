@@ -87,6 +87,27 @@ export interface LmTypeRef {
   column: number
 }
 
+/** Поле структуры (struct): имя и объявленный тип. */
+export interface LmField {
+  name: string
+  type: string
+  line: number
+}
+
+/** Диспетчер (dispatcher): имя и параметры. */
+export interface LmDispatcher {
+  name: string
+  params: LmParam[]
+  line: number
+}
+
+/** Локальная переменная внутри тела (let) или переменная цикла (for): тип есть, если записан. */
+export interface LmLocal {
+  name: string
+  type: string | null
+  line: number
+}
+
 export interface LmMemberUse {
   receiver: string
   member: string
@@ -109,12 +130,132 @@ export interface LmSource {
   widgets: LmWidget[]
   components: LmComponent[]
   enumValues: string[]
+  structFields: LmField[]
+  dispatchers: LmDispatcher[]
+  locals: LmLocal[]
   calls: LmCall[]
   writes: LmWrite[]
   typeRefs: LmTypeRef[]
   memberUses: LmMemberUse[]
   comments: LmComment[]
   unknown: Array<{ line: number; text: string }>
+}
+
+/** Вид имени самого языка Loom: встроенная функция, простой тип, метод встроенного типа или ключевое слово. */
+export type LoomLanguageKind = 'function' | 'type' | 'method' | 'keyword'
+
+/**
+ * Имена самого языка Loom — единственное место в MCP, где они перечислены.
+ * Источник правды: reference/builtins.md репозитория Loom (он же `loom.exe docs builtins`) —
+ * разделы «Plain types» и «Functions» (function/type), таблицы методов array/set/map и
+ * soft-ссылок (method). Ключевые слова — грамматика .lm: те же слова, что в RESERVED и
+ * ITEM_WORDS ниже, плюс модификаторы объявлений (editable/private/protected/pure/mut).
+ *
+ * Зачем списком, а не правилом «всё строчными»: `loom check --json` в массиве `missing`
+ * накапливает любое имя, которое искали как тип, — включая встроенные имена языка (cast,
+ * float, string). Такое имя не класс и не ассет, в types.json его не бывает, и ругаться на
+ * него нельзя ни warn-ом, ни догадкой «похоже на опечатку»: ww_loom_validate по этому списку
+ * помечает находку как check_missing_builtin (info) с точной причиной.
+ */
+const LOOM_LANGUAGE_BY_KIND: Record<LoomLanguageKind, readonly string[]> = {
+  function: ['cast', 'construct', 'create_widget', 'float', 'implements', 'include', 'int', 'name', 'string', 'subsystem', 'text'],
+  type: ['array', 'bool', 'byte', 'class', 'float', 'int', 'int64', 'map', 'name', 'set', 'soft', 'string', 'text'],
+  method: [
+    // array (KismetArrayLibrary), set (BlueprintSetLibrary), map (BlueprintMapLibrary), soft-ссылки
+    'Add',
+    'AddItems',
+    'AddUnique',
+    'Append',
+    'Clear',
+    'Contains',
+    'Difference',
+    'Find',
+    'GetItemByIndex',
+    'GetKeyValueByIndex',
+    'GetLastIndex',
+    'Identical',
+    'Insert',
+    'Intersection',
+    'IsEmpty',
+    'IsNotEmpty',
+    'IsValidIndex',
+    'Keys',
+    'LastIndex',
+    'Length',
+    'Random',
+    'RandomFromStream',
+    'Remove',
+    'RemoveItem',
+    'RemoveItems',
+    'Resize',
+    'Reverse',
+    'Set',
+    'Shuffle',
+    'ShuffleFromStream',
+    'Swap',
+    'ToArray',
+    'Union',
+    'Values',
+    'load',
+    'valid',
+  ],
+  keyword: [
+    'at',
+    'blueprint',
+    'break',
+    'category',
+    'component',
+    'continue',
+    'default',
+    'dispatcher',
+    'editable',
+    'editor',
+    'else',
+    'enum',
+    'event',
+    'false',
+    'fn',
+    'for',
+    'if',
+    'implements',
+    'interface',
+    'let',
+    'match',
+    'mut',
+    'none',
+    'on',
+    'out',
+    'private',
+    'protected',
+    'pure',
+    'ref',
+    'return',
+    'self',
+    'struct',
+    'super',
+    'true',
+    'use',
+    'var',
+    'while',
+    'widget',
+  ],
+}
+
+const LOOM_LANGUAGE_KINDS = new Map<string, LoomLanguageKind[]>()
+for (const [kind, names] of Object.entries(LOOM_LANGUAGE_BY_KIND) as Array<[LoomLanguageKind, readonly string[]]>) {
+  for (const name of names) {
+    const kinds = LOOM_LANGUAGE_KINDS.get(name)
+    if (kinds) kinds.push(kind)
+    else LOOM_LANGUAGE_KINDS.set(name, [kind])
+  }
+}
+
+/** Все имена языка Loom одним множеством: их не бывает в types.json, и warn-ом они быть не должны. */
+export const LOOM_LANGUAGE_NAMES: ReadonlySet<string> = new Set(LOOM_LANGUAGE_KINDS.keys())
+
+/** Что это за имя языка: функция, тип, метод или ключевое слово (у float, int, string, name, text — и то и другое). */
+export function loomLanguageKinds(name: string): LoomLanguageKind[] {
+  return LOOM_LANGUAGE_KINDS.get(name.trim()) ?? []
 }
 
 const RESERVED = new Set([
@@ -323,6 +464,9 @@ export function parseLm(file: string, rel: string, text: string): LmSource {
     widgets: [],
     components: [],
     enumValues: [],
+    structFields: [],
+    dispatchers: [],
+    locals: [],
     calls: [],
     writes: [],
     typeRefs: [],
@@ -404,8 +548,13 @@ export function parseLm(file: string, rel: string, text: string): LmSource {
         i = end
         continue
       }
-      const dispMatch = /^dispatcher\s+(`[^`]+`|[^\s(]+)\s*\(/.exec(code)
+      const dispMatch = /^dispatcher\s+(`[^`]+`|[^\s(]+)\s*\(([\s\S]*)\)/.exec(code)
       if (dispMatch) {
+        src.dispatchers.push({
+          name: unquote(dispMatch[1]),
+          params: parseParams(dispMatch[2]).list,
+          line: line.num,
+        })
         i = end
         continue
       }
@@ -497,7 +646,10 @@ export function parseLm(file: string, rel: string, text: string): LmSource {
     }
     if (src.header && src.header.kind === 'struct') {
       const fieldMatch = /^(`[^`]+`|[^\s:]+)\s*:\s*([^=]+?)(?:\s*=\s*([\s\S]*))?$/.exec(code)
-      if (fieldMatch) src.typeRefs.push({ name: fieldMatch[2].trim(), via: 'field', line: line.num, column: 1 })
+      if (fieldMatch) {
+        src.structFields.push({ name: unquote(fieldMatch[1]), type: fieldMatch[2].trim(), line: line.num })
+        src.typeRefs.push({ name: fieldMatch[2].trim(), via: 'field', line: line.num, column: 1 })
+      }
     }
   }
 
@@ -505,6 +657,7 @@ export function parseLm(file: string, rel: string, text: string): LmSource {
   for (const h of src.headers) if (h.parent) src.typeRefs.push({ name: h.parent, via: 'parent', line: h.line, column: 1 })
 
   src.calls = scanCalls(lines, src.bodies)
+  src.locals = scanLocals(src.bodies)
   src.writes.push(...scanWrites(lines, src.bodies))
   for (const call of src.calls) {
     if (call.receiver.length === 0) continue
@@ -584,6 +737,31 @@ function splitTop(text: string, sep: string): string[] {
 function bodyAt(bodies: LmBody[], line: number): string | null {
   for (const b of bodies) if (line >= b.line && line <= b.endLine) return b.name
   return null
+}
+
+const LET_RE = /\blet\s+(`[^`]+`|[A-Za-z_]\w*)\s*(?::\s*([^=\n]+?))?\s*=/g
+const FOR_RE = /\bfor\s+(`[^`]+`|[A-Za-z_]\w*)\s*(?:,\s*(`[^`]+`|[A-Za-z_]\w*))?\s+in\b/g
+
+/**
+ * Локальные переменные (let) и переменные циклов (for) внутри тел: имя, а у let ещё и тип,
+ * если он записан. Нужны, чтобы имя, объявленное в этом же файле, не выглядело чужой опечаткой.
+ */
+function scanLocals(bodies: LmBody[]): LmLocal[] {
+  const out: LmLocal[] = []
+  for (const b of bodies) {
+    const bodyLines = b.text.split('\n')
+    for (let i = 0; i < bodyLines.length; i++) {
+      const at = b.line + i
+      for (const m of bodyLines[i].matchAll(LET_RE)) {
+        out.push({ name: unquote(m[1]), type: m[2] ? m[2].trim() : null, line: at })
+      }
+      for (const m of bodyLines[i].matchAll(FOR_RE)) {
+        out.push({ name: unquote(m[1]), type: null, line: at })
+        if (m[3]) out.push({ name: unquote(m[3]), type: null, line: at })
+      }
+    }
+  }
+  return out
 }
 
 interface Scan {

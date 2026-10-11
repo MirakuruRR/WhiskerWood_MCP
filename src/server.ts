@@ -150,10 +150,7 @@ export function createServer(config: ServerConfig): McpServer {
     return (server.registerTool as unknown as (n: string, d: unknown, c: unknown) => unknown)(name, def, cb)
   }) as McpServer['registerTool']
 
-  const versionParam = z
-    .string()
-    .optional()
-    .describe('Версия игры (профиль индекса). По умолчанию — единственный/старший готовый профиль.')
+  const versionParam = z.string().optional().describe('Профиль индекса (версия игры)')
 
   registerTool(
     'ww_find_symbol',
@@ -284,25 +281,25 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Состояние индекса',
       description:
-        'Версия игры и профиля, свежесть по отпечатку файлов, источник типов, место снятия дампа, покрытие BP-классов и счётчики фильтрации. Вызывай, когда нужно понять, актуален ли индекс после патча игры.',
+        'Версия игры и профиля, свежесть по отпечатку файлов, источник типов, место снятия дампа, покрытие BP-классов и счётчики фильтрации. Вызывай, когда нужно понять, актуален ли индекс после патча игры. action=release закрывает открытые сервером дескрипторы index.db всех профилей — нужен только перед bun run setup --force, когда пересобирается уже загруженная версия: Windows не даёт подменить каталог профиля, пока файл в нём открыт. При обычной переиндексации на новую версию игры release не нужен — новый профиль публикуется в свой каталог.',
       inputSchema: {
+        action: z
+          .enum(['status', 'release'])
+          .optional()
+          .describe('status (по умолчанию) — прочитать состояние индекса; release — освободить дескрипторы index.db перед bun run setup --force'),
+        detail: z
+          .enum(['summary', 'full'])
+          .optional()
+          .describe('summary (по умолчанию) — версия, профиль, отпечаток и ключевые поля дампа; full — все поля profile_meta'),
         version: versionParam,
       },
       annotations: READ_ONLY,
     },
-    wrap((ctx) => handleIndexStatus(ctx, config)),
-  )
-
-  registerTool(
-    'ww_index_release',
-    {
-      title: 'Освободить index.db',
-      description:
-        'Закрывает открытые сервером дескрипторы index.db всех профилей. Нужен только перед bun run setup --force, когда пересобирается уже загруженная версия: Windows не даёт подменить каталог профиля, пока файл в нём открыт. При обычной переиндексации на новую версию игры не нужен — новый профиль публикуется в свой каталог.',
-      inputSchema: {},
-      annotations: READ_ONLY,
-    },
-    wrapPlain(() => handleIndexRelease()),
+    wrapPlain(async (args: { action?: 'status' | 'release'; detail?: 'summary' | 'full'; version?: string }) => {
+      if (args.action === 'release') return handleIndexRelease()
+      const ctx = await createGameContext(config, args.version)
+      return handleIndexStatus(ctx, config, args)
+    }),
   )
 
   registerTool(
@@ -310,7 +307,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'DataTable игры',
       description:
-        'Баланс игры из Content/Data: без аргументов — список всех таблиц с числом строк; с name — строки таблицы; с name+row — одна строка целиком; с row_pattern — поиск ключа строки по всем таблицам. Значения приходят как JSON, разобранный CUE4Parse по .usmap. Таблицы локализации (kind=loc) читай через ww_resolve_loc.',
+        'Баланс игры из Content/Data: без аргументов — список таблиц с числом строк (limit по умолчанию 25, в шапке total_found — сколько таблиц всего, и truncated); с name — строки таблицы; с name+row — одна строка целиком; с row_pattern — поиск ключа строки по всем таблицам. Значения приходят как JSON, разобранный CUE4Parse по .usmap. Таблицы локализации (kind=loc) читай через ww_resolve_loc.',
       inputSchema: {
         name: z.string().optional().describe('Имя таблицы, например TechUnlocksV2'),
         row: z.string().optional().describe('Точное имя строки — вернёт её целиком'),
@@ -390,7 +387,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Процесс игры',
       description:
-        'Управление самим процессом игры: запуск через Steam, force kill, перезапуск и автономная загрузка сохранения. action=start запускает копию из Steam (AppID берётся из appmanifest) и ЖДЁТ готовности: wait_for=process|bridge|menu|world, по умолчанию bridge. Перед стартом UE4SS.log уезжает в архив state/logs, поэтому ww_game_log потом читает только текущую сессию. action=start вместе с save запускает игру и, дождавшись главного меню, грузит сохранение через мост (ArcoGameInstance:EnterPlay) — это единственный автономный путь к загруженному миру; status=save_loaded означает, что карта поднялась, тяжёлый сейв может ещё дозагружать состояние. action=stop — taskkill /F, несохранённый прогресс теряется. stop и restart отказывают, если игру запустили не через MCP (not_ours: в неё, возможно, играет человек) или ею пользуется другая живая сессия MCP (owned_by_other_session: запустила она или звала мост за последние 10 минут) — тогда только с takeover=true. Чья игра — поля game_launched_by и game_last_used_by в status. action=restart нужен release-модам: они подхватываются только при старте игры. action=list_saves — имена сохранений с датами. Если игра исчезла не по нашей команде, status помечает exit_kind=unexpected и отдаёт крашдамп и последнюю ошибку лога. Состояние моста без трогания процесса смотри через ww_game_status.',
+        'Управление самим процессом игры: запуск через Steam, force kill, перезапуск и автономная загрузка сохранения. action=start запускает копию из Steam (AppID берётся из appmanifest) и ЖДЁТ готовности: wait_for=process|bridge|menu|world, по умолчанию bridge. Перед стартом UE4SS.log уезжает в архив state/logs, поэтому ww_game_log потом читает только текущую сессию. action=start вместе с save запускает игру и, дождавшись главного меню, грузит сохранение через мост (ArcoGameInstance:EnterPlay) — это единственный автономный путь к загруженному миру; status=save_loaded означает, что карта поднялась, тяжёлый сейв может ещё дозагружать состояние. action=stop — taskkill /F, несохранённый прогресс теряется. stop и restart отказывают, если игру запустили не через MCP (not_ours: в неё, возможно, играет человек) или ею пользуется другая живая сессия MCP (owned_by_other_session: запустила она или звала мост за последние 10 минут) — тогда только с takeover=true. Чья игра — поля game_launched_by и game_last_used_by в status. action=restart нужен release-модам: они подхватываются только при старте игры. action=list_saves — имена сохранений с датами. Если игра исчезла не по нашей команде, status помечает exit_kind=unexpected и отдаёт крашдамп и последнюю ошибку лога. Состояние моста без трогания процесса смотри через ww_game_status. action=status различает состояния моста: bridge=alive | not_responding (heartbeat устарел) | not_installed (файла bridge.status нет — мост ни разу не стартовал, рядом bridge_root).',
       inputSchema: {
         action: z
           .enum(['status', 'start', 'stop', 'restart', 'load_save', 'list_saves'])
@@ -419,9 +416,9 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Снять дампы рефлексии',
       description:
-        'Снимает свежие дампы (.usmap, UE4SS_ObjectDump.txt, UHTHeaderDump) прямо из запущенной игры через мост — DumpUSMAP/DumpAllObjects/GenerateUHTCompatibleHeaders, без AutoDump и без перезапуска игры. Нужен загруженный мир (ww_game_process action=start save=... wait_for=world), иначе часть блюпринтовых UI-классов не попадёт в дамп — откажет с no_world, пока не разрешишь allow_main_menu. Перед фактическим снятием выдерживает settle_ms (по умолчанию 60000): миру нужно время догрузить объекты после входа в уровень. Дальше — bun run dumps:pull и bun run setup.',
+        'Снимает свежие дампы (.usmap, UE4SS_ObjectDump.txt, UHTHeaderDump) прямо из запущенной игры через мост — DumpUSMAP/DumpAllObjects/GenerateUHTCompatibleHeaders, без AutoDump и без перезапуска игры. Нужен загруженный мир (ww_game_process action=start save=... wait_for=world), иначе часть блюпринтовых UI-классов не попадёт в дамп — откажет с no_world, пока не разрешишь allow_main_menu. Перед снятием ждёт settle_ms; без него пауза считается по аптайму моста: ждём остаток до 180 с аптайма, а мосту старше порога — не ждём вовсе (settle_source: explicit | bridge_uptime | default). Дальше — bun run dumps:pull и bun run setup.',
       inputSchema: {
-        settle_ms: z.number().int().min(0).max(180000).optional().describe('Пауза перед стартом дампа после входа в уровень, по умолчанию 60000'),
+        settle_ms: z.number().int().min(0).max(180000).optional().describe('Пауза перед стартом дампа; 0 — не ждать, без него — остаток до 180 с аптайма моста (мост старше 3 минут не ждёт вовсе), аптайм неизвестен — 60000'),
         timeout_ms: z.number().int().positive().max(600000).optional().describe('Общий бюджет ожидания маркера ALL DONE, по умолчанию settle_ms + 120000'),
         allow_main_menu: z.boolean().optional().describe('Снять дамп без загруженного мира (неполный — часть UI-классов не попадёт)'),
         version: versionParam,
@@ -560,10 +557,10 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Клик мышью в окно игры',
       description:
-        'Настоящий клик: курсор ставится в точку окна игры, окну уходят сообщения нажатия и отпускания кнопки — тот же путь «мышь → Slate → диспетчер», что у игрока, в отличие от вызова OnPressed через ww_call. x, y — пиксели кадра ww_screenshot mode=window (от левого верхнего угла окна): сначала сними кадр и найди на нём цель. Геометрию виджета по пути дать нельзя — вне Tick UE4SS отдаёт нулевую FGeometry. Курсор пользователя на долю секунды перемещается и затем возвращается (restore_cursor=false — оставить в точке, нужно для проверки наведения). Окно не должно быть свёрнуто; на игру, которой пользуется другая сессия MCP, отказывает без takeover=true. Результат клика проверяй кадром или ww_ui_tree.',
+        'Настоящий клик: курсор ставится в точку окна игры, окну уходят сообщения нажатия и отпускания кнопки — тот же путь «мышь → Slate → диспетчер», что у игрока, в отличие от вызова OnPressed через ww_call. x, y — нативные пиксели окна игры (от левого верхнего угла его прямоугольника): сначала сними кадр ww_screenshot mode=window и найди на нём цель; если вложение кадра было ужато, дели координату, снятую с картинки, на attach_scale, а при съёмке с crop прибавляй crop.x, crop.y — window и attach_scale приходят в ответе ww_screenshot. Геометрию виджета по пути дать нельзя — вне Tick UE4SS отдаёт нулевую FGeometry. Курсор пользователя на долю секунды перемещается и затем возвращается (restore_cursor=false — оставить в точке, нужно для проверки наведения). Окно не должно быть свёрнуто; на игру, которой пользуется другая сессия MCP, отказывает без takeover=true. Результат клика проверяй кадром или ww_ui_tree.',
       inputSchema: {
-        x: z.number().int().min(0).describe('X в пикселях кадра ww_screenshot mode=window'),
-        y: z.number().int().min(0).describe('Y в пикселях кадра ww_screenshot mode=window'),
+        x: z.number().int().min(0).describe('X в нативных пикселях окна игры (window и attach_scale — в ответе ww_screenshot)'),
+        y: z.number().int().min(0).describe('Y в нативных пикселях окна игры (window и attach_scale — в ответе ww_screenshot)'),
         button: z.enum(['left', 'right']).optional().describe('Кнопка мыши, по умолчанию left'),
         double: z.boolean().optional().describe('Двойной клик'),
         restore_cursor: z.boolean().optional().describe('Вернуть курсор на прежнее место, по умолчанию true'),
@@ -645,7 +642,7 @@ export function createServer(config: ServerConfig): McpServer {
         limit: z.number().int().positive().max(500).optional(),
         version: versionParam,
       },
-      annotations: LIVE_READ,
+      annotations: READ_ONLY,
     },
     wrapBridge(async (ctx, args) => handleGameLog(ctx, config, args)),
   )
@@ -676,7 +673,7 @@ export function createServer(config: ServerConfig): McpServer {
           .describe('Разбирать движковый дамп UECC и UE4SS.log вместо отчёта WWCrashGuard — когда вердикт неуверенный'),
         version: versionParam,
       },
-      annotations: LIVE_READ,
+      annotations: READ_ONLY,
     },
     wrapBridge(async (ctx, args) => handleCrashReport(ctx, config, args)),
   )
@@ -686,7 +683,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Скриншот из игры',
       description:
-        'Кадр из игры для визуальной проверки правок; картинка приходит прямо в ответ MCP-блоком image, мастер-кадр копится по пути из field file для сравнения между правками. window/auto: снимок игрового окна (класс UnrealWindow) через PrintWindow — кадр с HUD, каким его видит игрок, работает даже перекрытым. engine: HighResShot через консоль моста — чистый мир в разрешении res, но БЕЗ UMG/HUD (проверено на 0.7.200): для шрифта, отступов и цвета бери window. Вложенная копия без crop — JPEG q82, вписанная в бокс res (window/auto) или ≤1920 (engine); с crop {x,y,w,h} в пикселях кадра — нативный PNG области ради пиксельной точности вёрстки. res в window/auto задаёт бокс вложенной копии (WxH), в engine — разрешение рендера; множитель только в engine. attach_image: false — только пути, без картинки.',
+        'Кадр из игры для визуальной проверки правок; картинка приходит прямо в ответ MCP-блоком image, мастер-кадр копится по пути из field file для сравнения между правками. window/auto: снимок игрового окна (класс UnrealWindow) через PrintWindow — кадр с HUD, каким его видит игрок, работает даже перекрытым. engine: HighResShot через консоль моста — чистый мир в разрешении res, но БЕЗ UMG/HUD (проверено на 0.7.200): для шрифта, отступов и цвета бери window. Вложенная копия без crop — JPEG q82, вписанная в бокс res (window/auto) или ≤1920 (engine); с crop {x,y,w,h} в нативных пикселях кадра — нативный PNG области ради пиксельной точности вёрстки (если кроп легче лимита вложения, иначе он уходит ужатым JPEG). В ответе window=WxH — размер кадра (в window/auto нативное окно, в engine разрешение рендера), attach_size=WxH — размер вложенной копии, attach_scale = attach_size / размер вкладываемой области (кадр целиком, а с crop — область кропа; меньше 1, когда копия ужата под бокс res): координаты для ww_click и crop — всегда нативные пиксели кадра, точку с вложения переводи как native = attach_x/attach_scale, а с crop — плюс crop.x и crop.y (об этом напоминает crop_pixels=native). res в window/auto задаёт бокс вложенной копии (WxH), в engine — разрешение рендера; множитель только в engine. attach_image: false — только пути, без картинки.',
       inputSchema: {
         mode: z.enum(['auto', 'engine', 'window']).optional().describe('По умолчанию auto: окно игры, при неудаче HighResShot'),
         res: z
@@ -701,7 +698,7 @@ export function createServer(config: ServerConfig): McpServer {
             h: z.number().int().positive(),
           })
           .optional()
-          .describe('Область кропа в пикселях кадра, отсчёт от левого верхнего угла окна; вкладывается нативным PNG'),
+          .describe('Область кропа в нативных пикселях кадра, отсчёт от левого верхнего угла окна; вкладывается нативным PNG, если легче лимита вложения'),
         timeout_ms: z.number().int().positive().max(60000).optional().describe('Сколько ждать файл кадра engine-пути, по умолчанию 15000'),
         attach_image: z.boolean().optional().describe('Прикладывать картинку в ответ; по умолчанию true'),
         version: versionParam,
@@ -1002,7 +999,7 @@ export function createServer(config: ServerConfig): McpServer {
     {
       title: 'Собрать и установить pak-мод',
       description:
-        'Cook & Install без редактора: start → status → install. action=start запускает RunUAT BuildCookRun с аргументами WWModTools джобом (идут минуты) и отвечает job_id. action=status только читает: прогресс cook, а по завершённому джобу — найденный пак мода среди pakchunk<N>-Windows.pak, итог проверок (только ассеты мода, размер меньше лимита загрузчика, имена папки/.uplugin/.pak совпадают, EngineVersion = версии движка кита) и сравнение с <saved>/mods/<Мод>: ready_to_install или installed, если там уже лежат те же файлы. Джоб смотрится только при явном job_id: status и install с одним mod_name работают по паку, который уже лежит в pakchunk, — исход прошлых cook (упал, отменён) им не мешает, а если cook этого мода идёт прямо сейчас, ответ busy с его job_id; status без аргументов показывает идущий или последний cook. action=install — единственное копирующее действие: по завершённому cook (job_id) или по уже собранному паку (mod_name) копирует <Мод>.pak и <Мод>.uplugin в <saved>/mods/<Мод>/ с бэкапом прежней версии в state/backup; если файлы уже совпадают побайтно — already_installed, ничего не копируется. start с skip_cook: true — установка уже собранного пака одним вызовом, без RunUAT (то же, что install mod_name=… без job_id). action=cancel снимает cook деревом процессов: job_id — этот джоб, mod_name — идущий или последний cook этого мода, без аргументов — любой идущий или последний. Единственный, кроме ww_install_mod, ww_deploy_mod (DLL нативной части) и ww_extract_asset, инструмент, пишущий за пределы песочницы: ровно в <saved>/mods/<Мод> (в <кит>/Content и <кит>/Plugins не пишет). Pak-мод подхватывается только при старте игры. restart=true — явное согласие на перезапуск, весь цикл одним вызовом: start ждёт cook (до wait_ms, по умолчанию 300000; не уложился — cooking с next на install job_id=… restart=true, игра не тронута), игра закрывается только перед самим копированием (taskkill, несохранённое теряется), пак встаёт, игра поднимается с сейвом save (по умолчанию — сейв прошлого запуска через MCP, без него — до главного меню) и ждётся загрузка мира; итог — game_before_copy (stopped с pid | not_running), restart и поля game_*. С install и с start skip_cook=true то же без cook; при already_installed игра всё равно перезапускается. Без restart при запущенной игре install отказывает (game_running) до копирования и бэкапа: подменять пак под работающей игрой нельзя. Несуществующий save отвергается до cook и остановки. Чужую игру restart не закрывает: запущенную не через MCP — game_not_ours, занятую другой сессией MCP — game_owned_by_other_session, до cook; пробить — takeover=true. Если игру запустили, пока пак копировался, — game_started_meanwhile; занятый файл копирование повторяет до пяти раз. Полный цикл «правка .lm → проверка в игре» одним вызовом: start build=true restart=true resume=true — ww_loom_validate (ошибки — validate_failed, дальше не идёт), ww_loom_build с ожиданием (провал — build_failed с текстом ошибок компилятора), cook, установка, перезапуск с сейвом и снятие паузы (поле resume). Индекс игры не нужен: работает и на устаревшем профиле.',
+        'Cook & Install без редактора: start → status → install; индекс игры не нужен. action=start запускает RunUAT BuildCookRun джобом и отвечает job_id; skip_cook: true — поставить уже собранный пак без RunUAT. action=status только читает: прогресс cook, пак среди pakchunk<N>-Windows.pak, проверки (только ассеты мода, размер, совпадение имён папки/.uplugin/.pak, EngineVersion кита) и сравнение с <saved>/mods/<Мод>: ready_to_install или installed; если cook этого мода идёт прямо сейчас — busy с job_id. job_id адресует конкретный джоб; status и install с одним mod_name берут уже собранный пак. action=install копирует <Мод>.pak и <Мод>.uplugin в <saved>/mods/<Мод>/ с бэкапом в state/backup (совпали побайтно — already_installed); без restart при запущенной игре отказывает game_running. action=cancel снимает cook деревом процессов (job_id, mod_name или любой последний). restart=true — весь цикл одним вызовом: start ждёт cook, игра закрывается только перед копированием (taskkill, несохранённое теряется) и поднимается с сейвом save; чужую игру не закрывает — game_not_ours, game_owned_by_other_session, пробить takeover=true. build=true прогоняет перед cook ww_loom_validate и ww_loom_build (validate_failed / build_failed останавливают цикл), resume=true снимает паузу после загрузки мира. Пишет только в <saved>/mods/<Мод>. Pak-мод подхватывается при старте игры.',
       inputSchema: {
         action: z
           .enum(['start', 'status', 'install', 'cancel'])
@@ -1083,6 +1080,16 @@ export function createServer(config: ServerConfig): McpServer {
       inputSchema: {
         mod_root: z.string().optional().describe('Каталог мода; взаимоисключим с mod_name'),
         mod_name: z.string().optional().describe('Имя папки мода в <кит>/Content/Mods, например research_notifier'),
+        detail: z
+          .enum(['summary', 'default', 'full'])
+          .optional()
+          .describe('summary — только ошибки и счётчики; default — ошибки целиком, остальное свёрнуто по кодам; full сейчас совпадает с default — построчного сворачивания находок по кодам в loom-validate нет'),
+        codes: z.array(z.string()).optional().describe('Показать только эти коды находок'),
+        file: z.string().optional().describe('Показать только находки в файлах, путь которых содержит эту строку'),
+        since_last: z
+          .boolean()
+          .optional()
+          .describe('Показать только новое относительно прошлого прогона этого мода в текущей сессии сервера'),
         version: versionParam,
       },
       annotations: READ_ONLY,

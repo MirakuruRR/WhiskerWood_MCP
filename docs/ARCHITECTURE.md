@@ -20,7 +20,7 @@
 └──────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─ READ (миллисекунды, интерактивно) ──────────────────────────────────┐
-│  MCP stdio ──► 47 инструментов по группам, 4 промпта, ресурсы-шаблоны │
+│  MCP stdio ──► 46 инструментов по группам, 4 промпта, ресурсы-шаблоны │
 │            ──► index.db (readonly) + memory.db                       │
 └──────────────────────────────────────────────────────────────────────┘
                               ↕ (живые инструменты)
@@ -96,13 +96,13 @@ heartbeat, по которому `ww_game_status` отличает «игра з
 
 | Группа | Инструментов | Состав | Зачем |
 |---|---|---|---|
-| `recon` | 15 | разведка по индексу: `ww_find_symbol`, `ww_get_type`, `ww_get_function`, `ww_get_bytecode`, `ww_verify_hook`, `ww_find_callers`, `ww_lua_api`, ассеты и данные; промпт `ww:fix-after-patch` | нужна и Lua-, и Loom-модам |
-| `live` | 14 | всё, что требует запущенной игры: мост, скриншоты, трейс, вызовы, лог, краши | |
+| `recon` | 16 | разведка по индексу: `ww_find_symbol`, `ww_get_type`, `ww_get_function`, `ww_get_bytecode`, `ww_verify_hook`, `ww_find_callers`, `ww_index_status` (в том числе `action=release`), `ww_lua_api`, ассеты и данные; лог и краши — `ww_game_log` и `ww_crash_report` (читают файлы, запущенная игра не нужна); промпт `ww:fix-after-patch` | нужна и Lua-, и Loom-модам |
+| `live` | 12 | всё, что требует запущенной игры: мост, скриншоты, трейс, вызовы | |
 | `lua` | 6 | `ww_scaffold_mod`, `ww_generate_hook`, `ww_validate_mod`, `ww_deploy_mod`, `ww_package_mod`, `ww_install_mod`; промпт `ww:new-mod` | в Loom-режиме выключается: pak-мод не перехватывает функции |
 | `memory` | 4 | проектная память | |
 | `loom` | 8 | `ww_lift`, `ww_event_surface`, `ww_loom_new_mod`, `ww_loom_validate`, `ww_loom_probe`, `ww_loom_build`, `ww_loom_install`, `ww_loom_status`; промпты `ww:new-loom-mod`, `ww:port-to-loom`; ресурсы — шаблоны `.lm` (`ww://templates/loom/<имя>`) | |
 
-Всего 47 инструментов и 4 промпта, без `lua` — 41 инструмент. Шаблоны `.lm` — ресурсы, а не
+Всего 46 инструментов и 4 промпта, без `lua` — 40 инструментов. Шаблоны `.lm` — ресурсы, а не
 инструмент: они читаются из `data/templates/loom/` при каждом `resources/read`. По умолчанию
 включены все группы, поэтому существующие настройки не меняются. Пример Loom-режима:
 `"toolsets": ["recon", "live", "memory", "loom"]`.

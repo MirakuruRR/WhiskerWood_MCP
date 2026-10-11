@@ -35,9 +35,23 @@ if (unmapped.length > 0) console.log(`без группы: ${unmapped.join(', ')
 for (const t of tools.tools) console.log(`  - ${t.name}`)
 
 const registered = new Set(tools.tools.map((t) => t.name))
+const failures: string[] = []
+let skipped = 0
 const call = async (name: string, args: Record<string, unknown>) => {
+  if (!(name in TOOL_GROUPS)) {
+    failures.push(`${name}: инструмента нет в TOOL_GROUPS — переименован или удалён`)
+    console.log(`\n===== ${name} ===== нет в TOOL_GROUPS: переименован или удалён`)
+    return ''
+  }
+  const group = TOOL_GROUPS[name]
   if (!registered.has(name)) {
-    console.log(`\n===== ${name} ===== пропущен: группа ${TOOL_GROUPS[name] ?? '?'} выключена`)
+    if (cfg.toolsets.includes(group)) {
+      failures.push(`${name}: группа ${group} включена, но инструмент не зарегистрирован`)
+      console.log(`\n===== ${name} ===== группа ${group} включена, но инструмент не зарегистрирован`)
+      return ''
+    }
+    skipped++
+    console.log(`\n===== ${name} ===== пропущен: группа ${group} выключена`)
     return ''
   }
   const res = await client.callTool({ name, arguments: args })
@@ -198,8 +212,6 @@ if (loomMod !== null) console.log(`\nww:new-loom-mod: ${loomMod.length} симв
 const portPrompt = await promptText('ww:port-to-loom', { lua_mod: 'research-notifier' })
 if (portPrompt !== null) console.log(`ww:port-to-loom: ${portPrompt.length} символов`)
 
-const failures: string[] = []
-
 const resourcesOf = async (c: Client) => {
   try {
     return (await c.listResources()).resources
@@ -290,6 +302,7 @@ closeMemoryDb()
 
 await client.close()
 await server.close()
+if (skipped > 0) console.log(`\nвызовов пропущено (группа выключена): ${skipped}`)
 if (failures.length > 0) {
   console.error(`\nсмоук не прошёл:\n${failures.map((f) => `  - ${f}`).join('\n')}`)
   process.exit(1)

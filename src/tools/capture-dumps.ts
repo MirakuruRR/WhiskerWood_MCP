@@ -4,7 +4,7 @@ import { GameContext } from '../utils/game-context'
 import { getBridge } from '../utils/bridge-client'
 import { findGameProcess, lastCrashDump } from '../utils/game-process'
 import { renderAiText, Scalar } from '../utils/ai-text'
-import { echoFields, isLevelLoaded, statusFields } from './bridge-common'
+import { bridgeUptimeS, echoFields, isLevelLoaded, probeBridge } from './bridge-common'
 import { newestUsmap } from '../utils/ue4ss-mods'
 
 export interface CaptureDumpsArgs {
@@ -15,6 +15,9 @@ export interface CaptureDumpsArgs {
 
 const DEFAULT_SETTLE_MS = 60_000
 const MAX_SETTLE_MS = 180_000
+// Мир догружает объекты после входа в уровень примерно за 3 минуты: мосту младше
+// этого срока ждём остаток до порога, пожившему — не ждём вовсе.
+const SETTLE_FROM_BRIDGE_MS = 180_000
 const MAX_TIMEOUT_MS = 600_000
 const SCHEDULE_TIMEOUT_MS = 10_000
 const POLL_MS = 1000
@@ -57,19 +60,20 @@ export async function handleCaptureDumps(
   args: CaptureDumpsArgs,
 ): Promise<string> {
   const bridge = getBridge(config)
-  const st = await bridge.readStatusStable()
+  const probe = await probeBridge(config)
   const fields: Record<string, Scalar> = { ...echoFields(ctx) }
 
-  if (!bridge.isAlive(st)) {
+  if (!probe.alive || !probe.st) {
     fields.status = 'game_not_running'
     fields.hint =
       'мост не отвечает: сначала ww_game_process action=start (с save и wait_for=world, если нужен загруженный уровень)'
     return renderAiText({ reportType: 'capture_dumps', fields })
   }
 
-  Object.assign(fields, statusFields(st!))
-  const inLevel = isLevelLoaded(st!.world)
-  const capturedAt = inLevel ? 'in_level' : st!.world ? 'main_menu' : 'unknown'
+  const st = probe.st
+  Object.assign(fields, probe.fields)
+  const inLevel = isLevelLoaded(st.world)
+  const capturedAt = inLevel ? 'in_level' : st.world ? 'main_menu' : 'unknown'
   fields.captured_at = capturedAt
 
   if (capturedAt !== 'in_level' && !args.allow_main_menu) {
@@ -80,9 +84,13 @@ export async function handleCaptureDumps(
     return renderAiText({ reportType: 'capture_dumps', fields })
   }
 
-  const settleMs = Math.min(Math.max(args.settle_ms ?? DEFAULT_SETTLE_MS, 0), MAX_SETTLE_MS)
+  const uptimeS = bridgeUptimeS(st)
+  const uptimeSettleMs = uptimeS === null ? DEFAULT_SETTLE_MS : Math.max(0, SETTLE_FROM_BRIDGE_MS - uptimeS * 1000)
+  const explicitSettleMs = args.settle_ms
+  const settleMs = Math.min(Math.max(explicitSettleMs ?? uptimeSettleMs, 0), MAX_SETTLE_MS)
   const timeoutMs = Math.min(Math.max(args.timeout_ms ?? settleMs + 120_000, settleMs + 5_000), MAX_TIMEOUT_MS)
   fields.settle_ms = settleMs
+  fields.settle_source = explicitSettleMs !== undefined ? 'explicit' : uptimeS === null ? 'default' : 'bridge_uptime'
 
   const logPath = `${config.ue4ssDir}/UE4SS.log`
   let logOffset = 0

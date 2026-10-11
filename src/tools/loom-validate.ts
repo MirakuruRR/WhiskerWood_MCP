@@ -6,14 +6,28 @@ import { AiTextResult, MAX_RESULTS, Scalar, renderAiText } from '../utils/ai-tex
 import { KitPaths, kitStatus } from '../utils/kit'
 import { JsonRun, describeRun, failureDetail, loomCheck } from '../utils/loom'
 import { KitTypes, loadKitTypes } from '../utils/loom-kit-types'
-import { LmSource, locateToken, parseLm, shortTypeName } from '../utils/lm-parser'
+import {
+  LOOM_LANGUAGE_NAMES,
+  LmSource,
+  loomLanguageKinds,
+  locateToken,
+  parseLm,
+  shortTypeName,
+  type LoomLanguageKind,
+} from '../utils/lm-parser'
 import { activePitfalls, PitfallHint } from './memory-common'
 import { findByShortName } from './common'
+
+export type LoomValidateDetail = 'summary' | 'default' | 'full'
 
 export interface LoomValidateArgs {
   mod_root?: string
   mod_name?: string
   version?: string
+  detail?: LoomValidateDetail
+  codes?: string[]
+  file?: string
+  since_last?: boolean
 }
 
 type Severity = 'error' | 'warn' | 'info'
@@ -29,6 +43,18 @@ interface Finding {
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = { error: 0, warn: 1, info: 2 }
+
+/** Прошлый прогон по каждому моду — для since_last; живёт, пока жив процесс сервера. */
+const lastRuns = new Map<string, Map<string, string>>()
+
+function findingKey(f: Finding): string {
+  return `${f.code}|${f.file}|${f.message}`
+}
+
+/** Где находка: файл и строка, либо «мод» для находок обо всём моде. */
+function findingAt(f: Finding): string {
+  return f.file.length > 0 ? `${f.file}:${f.line}${f.column ? `:${f.column}` : ''}` : 'мод'
+}
 
 const WORLD_RECEIVERS = new Set([
   'GameplayStatics',
@@ -663,22 +689,99 @@ function collectPitfalls(lm: LmSource, pitfalls: PitfallHint[]): PitfallHit[] {
   return out
 }
 
-function ownDeclarations(parsed: LmSource[]): Map<string, { file: string; kind: string }> {
-  const out = new Map<string, { file: string; kind: string }>()
+interface OwnDecl {
+  file: string
+  kind: string
+}
+
+/**
+ * Имена, объявленные в самом моде: заголовки (blueprint/enum/struct/interface), переменные,
+ * функции и события с их параметрами, поля структур, диспетчеры, компоненты, виджеты, значения
+ * перечислений и локальные переменные. Такое имя не может быть чужой опечаткой: до первой
+ * сборки его ещё нет в types.json, а loom check всё равно перечисляет его в missing.
+ */
+export function ownDeclarations(parsed: LmSource[]): Map<string, OwnDecl> {
+  const out = new Map<string, OwnDecl>()
+  const add = (name: string, at: OwnDecl): void => {
+    const key = name.trim()
+    if (key.length > 0 && !out.has(key)) out.set(key, at)
+  }
   for (const lm of parsed) {
     for (const h of lm.headers) {
-      const at = { file: lm.rel, kind: h.kind }
-      out.set(h.name, at)
+      const at: OwnDecl = { file: lm.rel, kind: h.kind }
+      add(h.name, at)
       if (h.assetPath) {
-        out.set(h.assetPath, at)
-        out.set(h.assetPath.split('/').pop() ?? h.name, at)
+        add(h.assetPath, at)
+        add(h.assetPath.split('/').pop() ?? h.name, at)
       }
     }
+    for (const v of lm.vars) add(v.name, { file: lm.rel, kind: 'переменная' })
+    for (const b of lm.bodies) {
+      add(b.name, { file: lm.rel, kind: b.kind === 'fn' ? 'функция' : 'обработчик' })
+      for (const prm of b.params) add(prm.name, { file: lm.rel, kind: 'параметр' })
+    }
+    for (const f of lm.structFields) add(f.name, { file: lm.rel, kind: 'поле структуры' })
+    for (const d of lm.dispatchers) {
+      add(d.name, { file: lm.rel, kind: 'диспетчер' })
+      for (const prm of d.params) add(prm.name, { file: lm.rel, kind: 'параметр' })
+    }
+    for (const l of lm.locals) add(l.name, { file: lm.rel, kind: 'локальная переменная' })
+    for (const c of lm.components) add(c.name, { file: lm.rel, kind: 'компонент' })
+    for (const w of lm.widgets) add(w.name, { file: lm.rel, kind: 'виджет' })
+    for (const e of lm.enumValues) add(e, { file: lm.rel, kind: 'значение перечисления' })
   }
   return out
 }
 
-function checkMissing(ctx: GameContext | null, names: string[], own: Map<string, { file: string; kind: string }>, out: Finding[]): void {
+const LANGUAGE_KIND_LABEL: Record<LoomLanguageKind, string> = {
+  function: 'встроенная функция языка',
+  type: 'встроенный тип языка',
+  method: 'встроенный метод array/set/map/soft',
+  keyword: 'ключевое слово языка',
+}
+
+/** Чем является имя языка Loom (у float, int, string, name, text — и функцией, и типом), иначе null. */
+function languageNameLabel(name: string): string | null {
+  if (!LOOM_LANGUAGE_NAMES.has(name)) return null
+  const labels = loomLanguageKinds(name).map((k) => LANGUAGE_KIND_LABEL[k])
+  return [...new Set(labels)].join(' и ')
+}
+
+/** Префиксы ассетов UE: по ним имя узнаётся как ассет даже без заглавных букв. */
+const ASSET_PREFIXES = ['BP_', 'WBP_', 'BPI_', 'E_', 'S_', 'PAL_', 'DT_', 'MI_', 'M_', 'NS_', 'ABP_']
+
+/**
+ * Похоже ли имя на класс или ассет игры — только на таком имени warn осмыслен. Unreal называет
+ * типы в UpperCamelCase, ассеты — с префиксом BP_/WBP_/…, папку — путём с «/». Всё остальное
+ * (строчное локальное имя, `row.Count`, `pill.ikon`, папка `Foo/`, `m_workers`) классом или
+ * ассетом быть не может, и «похоже на опечатку» здесь — ложная тревога.
+ */
+function looksLikeClassOrAsset(name: string): boolean {
+  if (name.startsWith('/')) return true
+  if (name.endsWith('/')) return false
+  if (/[.:()[\]'"\s\\]/.test(name)) return false
+  if (/[A-Z]/.test(name)) return true
+  return ASSET_PREFIXES.some((prefix) => name.startsWith(prefix))
+}
+
+/**
+ * Разбор массива `missing` из `loom check --json`. Loom копит там любое имя, которое искал как
+ * тип: и встроенные имена языка (cast, float, string), и имена, которые в исходнике разрешились,
+ * и локальные имена. Warn (check_missing_unknown) остаётся только тому, что и вправду похоже на
+ * класс или ассет, но не нашлось ни в типах проекта, ни в индексе игры, — то есть опечатке.
+ *
+ * Коды: check_missing_own (info) — объявлено в этом моде; check_missing_builtin (info) — имя
+ * языка Loom; check_missing_kit_type (info) — разрешается в types.json; check_missing_not_class
+ * (info) — на класс/ассет не похоже; check_missing_game_bp (info) — есть в индексе игры;
+ * check_missing_unknown (warn) — похоже на класс/ассет и не найдено нигде.
+ */
+export function checkMissing(
+  ctx: GameContext | null,
+  names: string[],
+  own: Map<string, OwnDecl>,
+  kitTypes: KitTypes | null,
+  out: Finding[],
+): void {
   for (const name of names) {
     const short = name.startsWith('/') ? (name.split(/[./]/).pop() ?? name) : name
     const decl = own.get(name) ?? own.get(name.replace(/\.[^./]+$/, '')) ?? own.get(short) ?? own.get(short.replace(/_C$/, ''))
@@ -693,14 +796,41 @@ function checkMissing(ctx: GameContext | null, names: string[], own: Map<string,
       })
       continue
     }
-    if (/^[a-z][a-z0-9_]*$/.test(short)) {
+    const language = languageNameLabel(short) ?? languageNameLabel(name)
+    if (language) {
       out.push({
         file: '',
         line: 0,
         column: 0,
         severity: 'info',
         code: 'check_missing_builtin',
-        message: `${name}: встроенное имя Loom (функция или тип языка), а не класс игры — в types.json его нет, это не ошибка`,
+        message: `${name}: ${language} — в types.json его нет и быть не может, это не ошибка и не опечатка`,
+      })
+      continue
+    }
+    const resolved = kitTypes ? (kitTypes.resolve(name) ?? kitTypes.resolve(short)) : null
+    if (resolved) {
+      out.push({
+        file: '',
+        line: 0,
+        column: 0,
+        severity: 'info',
+        code: 'check_missing_kit_type',
+        message: `${name}: есть в types.json (${resolved.path}) — в исходнике имя разрешилось, а в missing оно попало накоплением loom check, это не ошибка`,
+        extra: { kit_path: resolved.path },
+      })
+      continue
+    }
+    if (!looksLikeClassOrAsset(short)) {
+      out.push({
+        file: '',
+        line: 0,
+        column: 0,
+        severity: 'info',
+        code: 'check_missing_not_class',
+        message: name.endsWith('/')
+          ? `${name}: папка типов или ассетов (loom check пишет такие имена со слэшем в конце) — не имя класса, это не ошибка`
+          : `${name}: не похоже на класс или ассет игры (нет заглавных букв, нет префикса ассета, не путь) — Loom кладёт в missing любое имя, которое искал как тип, включая локальные имена и пути по членам`,
       })
       continue
     }
@@ -951,7 +1081,7 @@ export async function handleLoomValidate(config: ServerConfig, args: LoomValidat
           extra: { loom: err.message },
         })
       }
-      if (missing.length > 0) checkMissing(ctx, missing, ownDeclarations(parsed), findings)
+      if (missing.length > 0) checkMissing(ctx, missing, ownDeclarations(parsed), kitTypes, findings)
       const otherErrors = (json.errors ?? []).length - ours.length
       checkStatus = added > 0 ? 'errors' : 'ok'
       checkSummary = json.ok
@@ -970,17 +1100,43 @@ export async function handleLoomValidate(config: ServerConfig, args: LoomValidat
 
   const errors = findings.filter((f) => f.severity === 'error').length
   const warnings = findings.filter((f) => f.severity === 'warn').length
-  const limited = findings.slice(0, MAX_RESULTS)
+
+  const current = new Map<string, string>()
+  for (const f of findings) current.set(findingKey(f), `${f.severity} ${f.code} ${findingAt(f)}`)
+  const baseline = lastRuns.get(mod.root)
+  lastRuns.set(mod.root, current)
+  const diff = args.since_last === true && baseline !== undefined
+  const isNew = (key: string): boolean => !diff || !baseline!.has(key)
+  const resolved = diff ? [...baseline!].filter(([k]) => !current.has(k)).map(([, label]) => label) : []
+  const newCount = [...current.keys()].filter(isNew).length
+
+  // full здесь не отличается от default: построчного сворачивания находок по кодам, как в ww_validate_mod, нет
+  const detail = args.detail ?? 'default'
+  const fileFilter = args.file?.replace(/\\/g, '/').toLowerCase()
+  const matched = findings.filter(
+    (f) =>
+      isNew(findingKey(f)) &&
+      (!args.codes || args.codes.includes(f.code)) &&
+      (!fileFilter || f.file.toLowerCase().includes(fileFilter)),
+  )
+  const shown = detail === 'summary' ? matched.filter((f) => f.severity === 'error') : matched
+  const limited = shown.slice(0, MAX_RESULTS)
 
   const results: AiTextResult[] = limited.map((f) => ({
     fields: {
       severity: f.severity,
       code: f.code,
-      at: f.file.length > 0 ? `${f.file}:${f.line}${f.column ? `:${f.column}` : ''}` : 'мод',
+      at: findingAt(f),
       message: f.message,
       ...(f.extra ?? {}),
     },
   }))
+
+  const filterNotes: string[] = []
+  if (detail !== 'default') filterNotes.push(`detail=${detail}${detail === 'summary' ? ' (только ошибки)' : ''}`)
+  if (args.codes) filterNotes.push(`codes=${args.codes.join(',')}`)
+  if (args.file) filterNotes.push(`file=${args.file}`)
+  if (args.since_last) filterNotes.push('since_last=true')
 
   return renderAiText({
     reportType: 'loom_validation',
@@ -1020,14 +1176,30 @@ export async function handleLoomValidate(config: ServerConfig, args: LoomValidat
       errors,
       warnings,
       infos: findings.length - errors - warnings,
+      ...(filterNotes.length > 0
+        ? {
+            filtered: filterNotes.join('; '),
+            ...(findings.length > shown.length ? { filtered_out: findings.length - shown.length } : {}),
+          }
+        : {}),
+      ...(args.since_last
+        ? {
+            since_last: diff
+              ? `новых ${newCount}, ушло ${resolved.length}, без изменений ${current.size - newCount}`
+              : 'прошлого прогона в этой сессии сервера нет — показано всё',
+            ...(resolved.length > 0
+              ? { resolved: resolved.slice(0, 10).join('; ') + (resolved.length > 10 ? ` …ещё ${resolved.length - 10}` : '') }
+              : {}),
+          }
+        : {}),
       hint:
         errors === 0 && warnings === 0
           ? 'дальше: ww_loom_build (сборка), затем ww_loom_install (cook → Saved/mods)'
           : 'правь .lm и гоняй ww_loom_validate заново: loom check видит только исходник',
     },
     results,
-    truncated: findings.length > limited.length,
-    totalFound: findings.length,
+    truncated: shown.length > limited.length,
+    totalFound: shown.length,
     limit: MAX_RESULTS,
   })
 }
