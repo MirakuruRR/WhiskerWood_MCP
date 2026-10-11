@@ -63,7 +63,7 @@ heartbeat, по которому `ww_game_status` отличает «игра з
 с dev-модами, которые грузятся в то же состояние. Поэтому на загрузке уровня heartbeat стоит.
 
 Через мост работают `ww_game_eval`, `ww_ui_tree`, `ww_deploy_mod`, `ww_screenshot`,
-`ww_trace_calls` и `ww_game_console`. Всё остальное — чистое чтение индекса и работает без
+`ww_trace_calls`, `ww_game_console` и `ww_game_control`. Всё остальное — чистое чтение индекса и работает без
 запущенной игры.
 
 Горячая перезагрузка мода сбрасывает `package.loaded["ww.*"]`, но снять подписки

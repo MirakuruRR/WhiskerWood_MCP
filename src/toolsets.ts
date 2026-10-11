@@ -25,6 +25,7 @@ export const TOOL_GROUPS: Record<string, Toolset> = {
   ww_trace_calls: 'live',
   ww_call: 'live',
   ww_game_console: 'live',
+  ww_game_control: 'live',
   ww_game_log: 'live',
   ww_crash_report: 'live',
   ww_screenshot: 'live',

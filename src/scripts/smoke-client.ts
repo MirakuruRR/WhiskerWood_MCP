@@ -96,6 +96,8 @@ await call('ww_game_log', { source: 'modlog', since: 'session', limit: 5 })
 await call('ww_game_log', { mod: 'AutoDump', limit: 8 })
 await call('ww_game_eval', { lua: "return #FindAllOf('Actor')" })
 await call('ww_game_console', { command: 'stat fps' })
+await call('ww_game_control', {})
+await call('ww_game_control', { action: 'camera' })
 await call('ww_verify_hook', {
   live: true,
   paths: [

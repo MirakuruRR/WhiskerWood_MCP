@@ -20,6 +20,7 @@ import { handleUiTree } from './tools/ui-tree'
 import { handleTraceCalls } from './tools/trace-calls'
 import { handleCallFunction } from './tools/call-function'
 import { handleGameConsole } from './tools/game-console'
+import { handleGameControl } from './tools/game-control'
 import { handleGameLog } from './tools/game-log'
 import { handleCrashReport } from './tools/crash-report'
 import { handleScreenshot } from './tools/screenshot'
@@ -541,6 +542,31 @@ export function createServer(config: ServerConfig): McpServer {
       annotations: LIVE_WRITE,
     },
     wrapBridge((ctx, args) => handleGameConsole(ctx, config, args)),
+  )
+
+  registerTool(
+    'ww_game_control',
+    {
+      title: 'Управление игрой: время, конец дня, камера',
+      description:
+        'Базовые действия игрока без ручного Lua: пауза, снятие паузы, скорость x1/x2/x3, завершение дня, закрытие всплывающих окон, камера. Кнопки HUD жмутся их собственными обработчиками, поэтому вызов безопасен — в отличие от HandleHudAction с FHudAction из ww_game_eval/ww_call, который роняет игру. Каждый ответ несёт состояние: paused, speed (1-3, 0 на паузе), day и остаток дня, end_of_day (none | day_over — плашка «День N окончен» | report — отчёт ждёт подписи | report_signed) и камеру. action=status — только прочитать. pause — пауза. resume — снять паузу, в том числе автопаузу от прибывшего корабля; без speed возвращает скорость, запомненную до паузы (иначе x1). speed — speed: 1|2|3, снимает и паузу, как кнопка. end_day — сам проходит плашку и подпись отчёта, новый день начинается без паузы. close_popup — закрыть всплывающие объявления, которые ставят игру на паузу (новый чертёж, срочное задание); окно выбора награды когтей не трогает — там нужен выбор. Окна, которые сейчас открыты, перечислены в open_views, (pause) — держит паузу. camera — pan_to {x,y} в мировых координатах, move {forward,right} относительно взгляда камеры, zoom (дистанция) или zoom_by (множитель), rotate_by (градусы по горизонтали), focus (путь объекта или класс актора) — камера плавно доезжает сама. time_dilation — фактический множитель времени: моды ускорения меняют его, скорость смотри в speed.',
+      inputSchema: {
+        action: z.enum(['status', 'pause', 'resume', 'speed', 'end_day', 'close_popup', 'camera']).optional().describe('По умолчанию status'),
+        speed: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional().describe('Кнопка скорости x1/x2/x3: для action=speed обязательна, для resume — вместо запомненной'),
+        pan_to: z.object({ x: z.number(), y: z.number() }).optional().describe('Точка мира, куда сместить камеру'),
+        move: z
+          .object({ forward: z.number().optional(), right: z.number().optional() })
+          .optional()
+          .describe('Сдвиг в юнитах относительно взгляда камеры; отрицательные — назад и влево'),
+        zoom: z.number().positive().optional().describe('Дистанция камеры; рамки игры — в camera_zoom_range'),
+        zoom_by: z.number().positive().optional().describe('Множитель дистанции: 0.5 — приблизить вдвое, 2 — отдалить'),
+        rotate_by: z.number().optional().describe('Поворот камеры по горизонтали в градусах'),
+        focus: z.string().optional().describe('Навести камеру на актор: полный путь объекта или короткое имя класса (первый живой)'),
+        version: versionParam,
+      },
+      annotations: LIVE_WRITE,
+    },
+    wrapBridge((ctx, args) => handleGameControl(ctx, config, args)),
   )
 
   registerTool(
