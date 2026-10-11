@@ -272,6 +272,45 @@
   pitfalls: |
     Как и StaticFindObject, видит только загруженное.
 
+- symbol: LoadAsset
+  category: search
+  signature: 'LoadAsset(objectPath: string) -> UObject'
+  summary: Загрузить ассет по пути объекта через реестр ассетов игры; только в игровом потоке.
+  status: caution
+  verified: stand
+  example: |
+    local reg = StaticFindObject("/Script/AssetRegistry.Default__AssetRegistryImpl")
+    reg:ScanPathsSynchronous({ "/Game/Mods/MyMod/" }, false, false)
+    local mat = LoadAsset("/Game/Mods/MyMod/M_Debug.M_Debug")
+    local cls = LoadAsset("/Game/Mods/MyMod/BP_Thing.BP_Thing_C")
+  pitfalls: |
+    Ищет ассет в реестре ассетов, а паков модов в нём нет: ассет мода, на который никто
+    не ссылается, не грузится — возвращается невалидная обёртка, не nil и не ошибка.
+    Ассеты, на которые ссылается загруженный код мода, приходят как зависимости и видны
+    через StaticFindObject. Лечится сканом папки: ScanPathsSynchronous у CDO
+    Default__AssetRegistryImpl (это и есть синглтон реестра в UE5; FindAllOf его не видит),
+    массив путей передаётся Lua-таблицей. Скан папки мода ~2 мс, после него LoadAsset
+    работает (проверено 11.10.2026 на 0.7.209.0: M_RP_Debug, S_Ring, NS_*, BP-классы).
+    Блюпринт грузится только по пути класса Pkg.Name_C: UBlueprint из кука вырезан,
+    путь Pkg.Name даёт невалидный объект.
+    Проверка — только IsValid(). В мосте всё это делает WWLoadAsset.
+
+- symbol: WWLoadAsset
+  category: dev
+  signature: 'WWLoadAsset(path: string) -> UObject|nil, how'
+  summary: Глобаль WWBridge — загрузить ассет, в том числе ассет pak-мода, на который никто не ссылается.
+  status: ok
+  verified: stand
+  example: |
+    local mat, how = WWLoadAsset("/Game/Mods/MyMod/M_Debug")
+    -- how: in_memory | loaded | scanned | not_found | bad_path | no_asset_registry
+  pitfalls: |
+    Принимает /Pkg/Path/Name или /Pkg/Path/Name.Object; без имени объекта пробует и
+    Name.Name, и Name.Name_C (класс блюпринта). Сначала StaticFindObject, затем LoadAsset,
+    при промахе — скан папки пакета и повторная загрузка.
+    Есть только в живой игре с мостом (ww_game_eval, ww_call); у игрока глобали нет —
+    в релизном Lua-моде используй рецепт из LoadAsset.
+
 - symbol: StaticConstructObject
   category: objects
   signature: 'StaticConstructObject(class: UClass, outer: UObject, name?: FName, flags?: integer, ...) -> UObject'

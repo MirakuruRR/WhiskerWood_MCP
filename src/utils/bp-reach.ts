@@ -22,6 +22,8 @@ export interface LuaMember {
   name: string
   kind: 'method' | 'field'
   write: boolean
+  /** Имя совпадает с Lua-локалом чанка (`out.rate = rate`): сверка с индексом только с точным регистром. */
+  exactCase?: boolean
 }
 
 /** Комментарии и строковые литералы вырезаются: имя члена внутри текста — не обращение к члену. */
@@ -70,15 +72,35 @@ function stripLuaNoise(text: string): string {
   return out
 }
 
-const MEMBER_RE = /(?:[A-Za-z_]\w*|\]|\))\s*([.:])\s*([A-Za-z_]\w*)/g
+const MEMBER_RE = /(?:([A-Za-z_]\w*)|\]|\))\s*([.:])\s*([A-Za-z_]\w*)/g
+const TABLE_DECL_RE = /(?<![.:\w])([A-Za-z_]\w*)\s*=\s*\{/g
+const LOCAL_DECL_RE = /\blocal\s+(?:function\s+)?([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)/g
+const PARAMS_RE = /\bfunction\b[\w.:\s]*\(([^)]*)\)/g
+const FOR_RE = /\bfor\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*(?:=|\bin\b)/g
+
+function namesFrom(text: string, re: RegExp): Set<string> {
+  const out = new Set<string>()
+  re.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    for (const n of m[1].split(',')) {
+      const name = n.trim()
+      if (/^[A-Za-z_]\w*$/.test(name)) out.add(name)
+    }
+  }
+  return out
+}
 
 export function extractLuaMembers(chunk: string): LuaMember[] {
   const text = stripLuaNoise(chunk)
+  const tables = namesFrom(text, TABLE_DECL_RE)
+  const locals = new Set([...namesFrom(text, LOCAL_DECL_RE), ...namesFrom(text, PARAMS_RE), ...namesFrom(text, FOR_RE)])
   const seen = new Map<string, LuaMember>()
   let m: RegExpExecArray | null
   MEMBER_RE.lastIndex = 0
   while ((m = MEMBER_RE.exec(text)) !== null) {
-    const name = m[2]
+    if (m[1] && tables.has(m[1])) continue
+    const name = m[3]
     if (name.length < MIN_NAME_LENGTH || LUA_RESERVED.has(name)) continue
     let k = m.index + m[0].length
     while (k < text.length && (text[k] === ' ' || text[k] === '\t')) k++
@@ -91,7 +113,7 @@ export function extractLuaMembers(chunk: string): LuaMember[] {
       if (isWrite) prev.write = true
       continue
     }
-    seen.set(key, { name, kind, write: isWrite })
+    seen.set(key, { name, kind, write: isWrite, ...(locals.has(name) ? { exactCase: true } : {}) })
   }
   return [...seen.values()]
 }
@@ -153,13 +175,14 @@ function fieldVerdict(ctx: GameContext, config: ServerConfig, owner: string, nam
 }
 
 function ownersOf(ctx: GameContext, member: LuaMember): string[] {
+  const cmp = member.exactCase ? 'name = ?1 COLLATE NOCASE AND name = ?1 COLLATE BINARY' : 'name = ?1 COLLATE NOCASE'
   if (member.kind === 'method') {
     const rows = ctx.db
-      .query("SELECT outer_path FROM objects WHERE kind = 'Function' AND name = ? COLLATE NOCASE AND outer_path IS NOT NULL LIMIT 4")
+      .query(`SELECT outer_path FROM objects WHERE kind = 'Function' AND ${cmp} AND outer_path IS NOT NULL LIMIT 4`)
       .all(member.name) as Array<{ outer_path: string }>
     return rows.map((r) => r.outer_path)
   }
-  const rows = ctx.db.query('SELECT owner_path FROM properties WHERE name = ? COLLATE NOCASE LIMIT 4').all(member.name) as Array<{ owner_path: string }>
+  const rows = ctx.db.query(`SELECT owner_path FROM properties WHERE ${cmp} LIMIT 4`).all(member.name) as Array<{ owner_path: string }>
   return rows.map((r) => r.owner_path)
 }
 

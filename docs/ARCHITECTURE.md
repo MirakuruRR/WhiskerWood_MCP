@@ -66,6 +66,10 @@ heartbeat, по которому `ww_game_status` отличает «игра з
 `ww_trace_calls`, `ww_game_console` и `ww_game_control`. Всё остальное — чистое чтение индекса и работает без
 запущенной игры.
 
+Мост же объявляет глобаль `WWLoadAsset(path)`. Паков модов нет в реестре ассетов игры, и штатный
+`LoadAsset` не находит ассет мода, на который никто не ссылается: глобаль сканирует папку пакета
+(`ScanPathsSynchronous` у `Default__AssetRegistryImpl`) и грузит заново. Ею пользуется `ww_call`.
+
 Горячая перезагрузка мода сбрасывает `package.loaded["ww.*"]`, но снять подписки
 `RegisterLoadMapPostHook` и `NotifyOnNewObject` нечем — поэтому состояние библиотеки
 `ww.*` живёт в `_G`, а не в модулях.

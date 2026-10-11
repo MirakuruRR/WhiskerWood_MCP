@@ -141,6 +141,45 @@ local function refreshWorld()
     end
 end
 
+-- паков модов нет в реестре ассетов: без скана папки LoadAsset их не видит
+local function isValid(o)
+    return o ~= nil and o:IsValid()
+end
+
+local function tryLoad(path)
+    local ok, o = pcall(LoadAsset, path)
+    if ok and isValid(o) then return o end
+end
+
+-- путь блюпринта грузится только с _C: UBlueprint в куке вырезан
+function _G.WWLoadAsset(path)
+    local pkg, name = tostring(path):match("^(/[%w_/%-]+)%.([%w_%-]+)$")
+    if not pkg then
+        pkg = tostring(path):match("^(/[%w_/%-]+)$")
+        if not pkg then return nil, "bad_path" end
+        name = pkg:match("([^/]+)$")
+    end
+    local candidates = { pkg .. "." .. name }
+    if name == pkg:match("([^/]+)$") then candidates[2] = candidates[1] .. "_C" end
+    for _, c in ipairs(candidates) do
+        local found = StaticFindObject(c)
+        if isValid(found) then return found, "in_memory" end
+    end
+    if pkg:sub(1, 8) == "/Script/" then return nil, "not_found" end
+    for _, c in ipairs(candidates) do
+        local o = tryLoad(c)
+        if o then return o, "loaded" end
+    end
+    local reg = StaticFindObject("/Script/AssetRegistry.Default__AssetRegistryImpl")
+    if not isValid(reg) then return nil, "no_asset_registry" end
+    pcall(function() reg:ScanPathsSynchronous({ pkg:match("^(.*/)") }, false, false) end)
+    for _, c in ipairs(candidates) do
+        local o = tryLoad(c)
+        if o then return o, "scanned" end
+    end
+    return nil, "not_found"
+end
+
 local OPS = {}
 
 function OPS.ping()

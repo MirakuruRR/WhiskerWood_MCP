@@ -129,6 +129,9 @@ function argExprFor(ctx: GameContext, p: ArgSpec, raw: unknown): { expr: string 
 }
 
 function objectSelectionChunk(object: string, index: number | undefined): string {
+  if (object.startsWith(MOD_ASSET_PREFIX)) {
+    return `local target = WW_RESOLVE(${luaStr(object)})`
+  }
   if (object.startsWith('/')) {
     return `local target = StaticFindObject(${luaStr(object)})`
   }
@@ -181,7 +184,11 @@ function callChunk(selection: string, callName: string, argExprs: string[], outp
   const lines: string[] = []
   lines.push('local dump = require("ww.dump")')
   lines.push('local function WW_RESOLVE(input)')
-  lines.push('  if input:sub(1, 1) == "/" then return StaticFindObject(input) end')
+  lines.push('  if input:sub(1, 1) == "/" then')
+  lines.push('    local o = StaticFindObject(input)')
+  lines.push(`    if not (o and o:IsValid()) and WWLoadAsset and input:sub(1, ${MOD_ASSET_PREFIX.length}) == ${luaStr(MOD_ASSET_PREFIX)} then o = WWLoadAsset(input) end`)
+  lines.push('    return o')
+  lines.push('  end')
   lines.push('  local all = FindAllOf(input)')
   lines.push('  return all and all[1] or nil')
   lines.push('end')

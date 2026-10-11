@@ -36,7 +36,7 @@ export interface GameProcessArgs {
 const DEFAULT_TIMEOUT_MS = 180_000
 const MAX_TIMEOUT_MS = 600_000
 const ENTER_PLAY_TIMEOUT_MS = 10_000
-const RELAUNCH_PAUSE_MS = 2000
+export const RELAUNCH_PAUSE_MS = 2000
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -98,7 +98,7 @@ async function loadSaveFields(config: ServerConfig, save: string): Promise<Recor
   return { load_save: 'failed', load_error: res.status }
 }
 
-async function doStop(config: ServerConfig, fields: Record<string, Scalar>): Promise<boolean> {
+export async function doStop(config: ServerConfig, fields: Record<string, Scalar>): Promise<boolean> {
   const proc = findGameProcess(config)
   writeState(config, { stopRequestedAt: Date.now() })
   if (!proc) {
@@ -114,7 +114,7 @@ async function doStop(config: ServerConfig, fields: Record<string, Scalar>): Pro
   return gone
 }
 
-async function doStart(
+export async function doStart(
   config: ServerConfig,
   args: GameProcessArgs,
   fields: Record<string, Scalar>,

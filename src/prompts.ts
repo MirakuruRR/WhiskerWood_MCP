@@ -106,12 +106,12 @@ const NEW_LOOM_MOD = (goal: string, modName: string) => `Собери мод Whi
 11. ww_loom_build — сборка Blueprint и её отчёт. При провале читай report.json и разбор
    инструмента, а не гадай; неудачная сборка может уронить редактор на следующей.
    Зависшую headless-сборку снимает action=cancel.
-12. ww_loom_install: action=start mod_name=${modName} — cook джобом; action=status job_id=… —
-   прогресс, найденный пак и проверки, ничего не копирует; при ready_to_install —
-   action=install job_id=… кладёт .pak в <saved>/mods/${modName}. Без job_id, с одним
-   mod_name, status и install берут уже собранный пак, на исход прошлых cook не смотрят. Затем
-   ww_game_process restart save=<имя сейва> wait_for=world: .pak подхватывается только при
-   старте игры, горячей перезагрузки у него нет.
+12. ww_loom_install action=start mod_name=${modName} restart=true save=<имя сейва> — весь цикл
+   одним вызовом: cook, остановка игры перед копированием, .pak в <saved>/mods/${modName},
+   игра поднимается с сейвом (.pak подхватывается только при старте игры, горячей
+   перезагрузки у него нет). restart=true — согласие закрыть игру: не ставь его, пока в игру
+   играет пользователь. Без restart — пошагово: start → status job_id=… → install job_id=…,
+   затем ww_game_process restart save=<имя сейва> wait_for=world.
 13. Проверка в игре: ww_game_log с source=modlog по префиксу мода (LogMessage — единственный
    канал из shipping-сборки), ww_ui_tree и ww_screenshot для HUD, ww_trace_calls по своим
    функциям. Ошибки Blueprint игра глушит молча: «мод не работает» без строк в modlog — тоже
@@ -154,8 +154,8 @@ const PORT_TO_LOOM = (luaMod: string, modName: string) => `Перенеси Lua-
    редакторе — «New mod...» в нём), заготовки .lm — ресурсы этого MCP-сервера ${T}/<имя>
    (список — resources/list), справка
    по языку из loom-mcp (docs, docs_search), затем ww_loom_validate → ww_loom_build →
-   ww_loom_install (start → status → install) →
-   ww_game_process restart save=<имя сейва> wait_for=world → ww_game_log с source=modlog.
+   ww_loom_install action=start restart=true save=<имя сейва> (cook, установка и перезапуск
+   игры одним вызовом) → ww_game_log с source=modlog.
 8. ww_memory_add: перенесённые грабли, найденные точки реакции и то, что из Lua в Loom не
    переносится. mod_name: ${modName} ставь только на записи про сам мод; выясненное про игру,
    Loom и UE4SS пиши без mod_name — оно пригодится любому моду.

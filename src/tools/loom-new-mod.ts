@@ -441,7 +441,8 @@ async function createText(config: ServerConfig, kit: KitPaths, args: LoomNewModA
   if (!plan.ok) return plan.text
 
   const existing = `${kit.contentMods}/${modName}`
-  if (existsSync(existing)) {
+  const emptyDir = existsSync(existing) && statSync(existing).isDirectory() && filesUnder(newModPathSafe(kit, modName)).length === 0
+  if (existsSync(existing) && !emptyDir) {
     const dir = newModPathSafe(kit, modName)
     const files = filesUnder(dir)
     return report(
@@ -456,7 +457,7 @@ async function createText(config: ServerConfig, kit: KitPaths, args: LoomNewModA
 
   let dir: string
   try {
-    dir = newModDir(kit, modName, true)
+    dir = newModDir(kit, modName, !emptyDir)
   } catch (e) {
     return report({ action: 'create', status: 'sandbox_violation', mod: modName, error: (e as Error).message })
   }
