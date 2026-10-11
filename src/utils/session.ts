@@ -76,7 +76,10 @@ export function gameOwnership(config: ServerConfig): GameOwnership {
   return { conflict: 'none', fields }
 }
 
-export function ownershipHint(o: GameOwnership): string {
+export function ownershipHint(o: GameOwnership, act: 'stop' | 'click' = 'stop'): string {
+  if (act === 'click') {
+    return 'игрой сейчас пользуется другая сессия MCP: клик собьёт её проверку (курсор, фокус, состояние UI). Договорись или повтори с takeover=true'
+  }
   return o.conflict === 'external'
     ? 'игру запустили не через MCP — возможно, в неё играет человек. Закрывать её можно только с takeover=true'
     : 'игрой сейчас пользуется другая сессия MCP: закрыв её, ты сорвёшь её проверку. Договорись или повтори с takeover=true'

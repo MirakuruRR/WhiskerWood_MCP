@@ -359,7 +359,7 @@ function handleCodePattern(ctx: GameContext, pattern: string, limit?: number): s
     return lines
   }
 
-  const results: AiTextResult[] = codeRows.map((row) => {
+  const codeResults: AiTextResult[] = codeRows.map((row) => {
     const lines = linesOf(row.file)
     const from = Math.max(1, row.line_from)
     const to = Math.min(lines.length > 0 ? lines.length : row.line_to, row.line_to)
@@ -390,18 +390,16 @@ function handleCodePattern(ctx: GameContext, pattern: string, limit?: number): s
   const bytecodeTotal = (
     ctx.db.query('SELECT COUNT(*) c FROM function_bytecode WHERE instr(lower(disasm), ?) > 0').get(needle) as { c: number }
   ).c
-  const room = Math.max(max - results.length, Math.min(max, 5))
   const bytecodeRows = ctx.db
     .query('SELECT function_path, disasm FROM function_bytecode WHERE instr(lower(disasm), ?) > 0 LIMIT ?')
-    .all(needle, room + codeFunctions.size) as Array<{ function_path: string; disasm: string }>
-  let bytecodeShown = 0
+    .all(needle, max + codeFunctions.size) as Array<{ function_path: string; disasm: string }>
+  const bytecodeResults: AiTextResult[] = []
   for (const row of bytecodeRows) {
-    if (bytecodeShown >= room) break
+    if (bytecodeResults.length >= max) break
     if (codeFunctions.has(functionKey(row.function_path))) continue
     const hits = bytecodeHits(row.disasm, needle)
     if (hits.length === 0) continue
-    bytecodeShown++
-    results.push({
+    bytecodeResults.push({
       fields: {
         source: 'bytecode',
         function: row.function_path,
@@ -411,6 +409,9 @@ function handleCodePattern(ctx: GameContext, pattern: string, limit?: number): s
       blocks: { lines: hits.map((h) => `[entry ${h.entry}] ${h.line}`).join('\n') },
     })
   }
+  // limit общий на оба слоя, но треть держим под байткод: иначе код вытесняет застабленные тела
+  const bytecodeKeep = Math.min(bytecodeResults.length, Math.max(max - codeResults.length, Math.floor(max / 3)))
+  const results = [...codeResults.slice(0, max - bytecodeKeep), ...bytecodeResults.slice(0, bytecodeKeep)]
 
   if (results.length === 0) {
     return fail('not_found', {

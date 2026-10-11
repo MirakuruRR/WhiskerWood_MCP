@@ -25,7 +25,7 @@ export async function handleClick(ctx: GameContext | null, config: ServerConfig,
   if (args.takeover !== true) {
     const own = gameOwnership(config)
     if (own.conflict === 'other_session') {
-      return renderAiText({ reportType: 'click', fields: { ...fields, status: 'owned_by_other_session', ...own.fields, hint: ownershipHint(own) } })
+      return renderAiText({ reportType: 'click', fields: { ...fields, status: 'owned_by_other_session', ...own.fields, hint: ownershipHint(own, 'click') } })
     }
   }
 

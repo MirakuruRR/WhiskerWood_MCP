@@ -25,8 +25,9 @@ local candidateCount = (o and o:IsValid()) and 1 or 0`
 
 /**
  * Переменные экземпляра Loom/BP по рефлексии. Поля UserDefinedStruct в игре зовутся
- * Name_2_<GUID>: суффикс срезается. Тип элемента TMap/TSet из Lua не узнать —
+ * Name_2_<GUID>: суффикс срезается. Тип элемента TMap из Lua не узнать —
  * элемент опознаётся по значению: строка, UObject или структура (у неё есть ForEachProperty).
+ * TSet:ForEach в этой сборке UE4SS отдаёт (i, nil): множество не обходится.
  */
 function chunk(args: ModStateArgs, depth: number, maxItems: number, safeContainers: string[]): string {
   const wanted = (args.vars ?? []).map((v) => v.trim().toLowerCase()).filter((v) => v.length > 0)
@@ -37,7 +38,7 @@ local MAXD, MAXI, LIMIT = ${depth}, ${maxItems}, ${MAX_LINES}
 local HEX = "_%d+_" .. string.rep("%x", 32) .. "$"
 local WANT = {${wanted.map((w) => `[ ${luaStr(w)} ] = true`).join(', ')}}
 local hasWant = ${wanted.length > 0 ? 'true' : 'false'}
--- TMap/TSet, у которых по паку мода все типы элементов читаемы; остальные не трогаем совсем
+-- TMap, у которых по паку мода все типы элементов читаемы; остальные не трогаем совсем
 local SAFEC = {${safeContainers.map((n) => `[ ${luaStr(n)} ] = true`).join(', ')}}
 local SCALAR = { IntProperty = 1, Int64Property = 1, Int16Property = 1, Int8Property = 1, UInt16Property = 1, UInt32Property = 1, UInt64Property = 1, FloatProperty = 1, DoubleProperty = 1, BoolProperty = 1, ByteProperty = 1, EnumProperty = 1 }
 local TEXT = { StrProperty = 1, NameProperty = 1, TextProperty = 1 }
@@ -102,8 +103,12 @@ fmtValue = function(v, depth, pad, label)
   emit(pad, "}")
 end
 local function container(v, depth, pad, label, kind, inner, pname)
+  if kind == "SetProperty" then
+    emit(pad, label .. ": set <TSet из Lua UE4SS не обходится>")
+    return
+  end
   if kind ~= "ArrayProperty" and not SAFEC[pname] then
-    emit(pad, label .. ": " .. (kind == "MapProperty" and "map" or "set") .. " <типы элементов неизвестны — не читаю>")
+    emit(pad, label .. ": map <типы элементов неизвестны — не читаю>")
     return
   end
   local n = 0
@@ -121,7 +126,7 @@ local function container(v, depth, pad, label, kind, inner, pname)
       end)
     end
   end)
-  local tag = kind == "MapProperty" and "map" or kind == "SetProperty" and "set" or "array"
+  local tag = kind == "MapProperty" and "map" or "array"
   if not walked then emit(pad, label .. ": " .. tag .. " <обход из Lua не поддержан>") return end
   if n == 0 then emit(pad, label .. ": " .. tag .. "[0]") return end
   if depth >= MAXD then emit(pad, label .. ": " .. tag .. "[" .. n .. "] …") return end
@@ -167,6 +172,7 @@ while cls and cls:IsValid() do
   cls = nextCls
 end
 local shown = 0
+local seen = {}
 for _, c in ipairs(classes) do
   local cname = c:GetFName():ToString()
   local header = false
@@ -175,6 +181,7 @@ for _, c in ipairs(classes) do
     local key = clean(name):lower()
     if name:find("^UberGraphFrame") or name == "DefaultSceneRoot" then return end
     if hasWant and not WANT[key] then return end
+    seen[key] = true
     if not header then emit("", "# " .. cname) header = true end
     local kind = kindOf(p)
     local label = clean(name) .. " (" .. kind:gsub("Property$", "") .. ")"
@@ -188,7 +195,10 @@ for _, c in ipairs(classes) do
     shown = shown + 1
   end)
 end
-return "ok" .. string.char(10) .. tostring(candidateCount) .. string.char(10) .. o:GetFullName() .. string.char(10) .. shown .. string.char(10) .. tostring(lines >= LIMIT) .. string.char(10) .. table.concat(out, string.char(10))
+local missing = {}
+for w in pairs(WANT) do if not seen[w] then missing[#missing + 1] = w end end
+table.sort(missing)
+return "ok" .. string.char(10) .. tostring(candidateCount) .. string.char(10) .. o:GetFullName() .. string.char(10) .. shown .. string.char(10) .. tostring(lines >= LIMIT) .. string.char(10) .. table.concat(missing, ",") .. string.char(10) .. table.concat(out, string.char(10))
 `.trim()
 }
 
@@ -223,7 +233,7 @@ export async function handleModState(ctx: GameContext | null, config: ServerConf
       },
     })
   }
-  const [, candidates, resolved, shown, cut, ...tree] = lines
+  const [, candidates, resolved, shown, cut, missing, ...tree] = lines
   return renderAiText({
     reportType: 'mod_state',
     fields: {
@@ -232,6 +242,7 @@ export async function handleModState(ctx: GameContext | null, config: ServerConf
       candidates: Number(candidates),
       resolved,
       vars_shown: Number(shown),
+      ...(missing ? { missing_vars: (args.vars ?? []).filter((v) => missing.split(',').includes(v.trim().toLowerCase())).join(', '),missing_hint: 'таких переменных нет у класса мода и его родителей из /Game: сверь имя с .lm' } : {}),
       ...(cut === 'true' ? { truncated_lines: MAX_LINES, hint: 'вывод упёрся в лимит строк: сузь vars или уменьши depth/max_items' } : {}),
       note: 'имена полей структур — без GUID-суффикса; регистр имени переменной — как в FName игры, он может отличаться от .lm',
     },

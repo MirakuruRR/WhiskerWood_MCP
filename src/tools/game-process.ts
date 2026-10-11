@@ -102,12 +102,12 @@ async function loadSaveFields(config: ServerConfig, save: string): Promise<Recor
 
 export async function doStop(config: ServerConfig, fields: Record<string, Scalar>): Promise<boolean> {
   const proc = findGameProcess(config)
-  writeState(config, { stopRequestedAt: Date.now() })
   if (!proc) {
     fields.stop = 'not_running'
     Object.assign(fields, exitFields(config, readState(config)))
     return true
   }
+  writeState(config, { stopRequestedAt: Date.now() })
   Object.assign(fields, procFields(proc))
   killGame(config)
   const gone = await waitProcessGone(config)
