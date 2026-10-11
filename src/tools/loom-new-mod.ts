@@ -4,6 +4,7 @@ import { ServerConfig } from '../config'
 import { loomTemplates } from '../prompts'
 import { renderAiText, Scalar } from '../utils/ai-text'
 import { activeJob, cancelJob, isPidAlive, JobRecord, jobProgress, listJobs, readJob, startJob, updateJob } from '../utils/jobs'
+import { sessionLabel } from '../utils/session'
 import {
   editorPluginPaths,
   findEditorProcess,
@@ -411,7 +412,7 @@ function busyText(job: JobRecord, modName: string): string {
       : job.kind === 'cook'
         ? `ww_loom_install action=status job_id=${job.id}`
         : `ww_loom_build action=status job_id=${job.id}`
-  return report({ action: 'create', status: 'busy', mod: modName, running_job: job.id, running_kind: job.kind, next: owner }, {}, [
+  return report({ action: 'create', status: 'busy', mod: modName, running_job: job.id, running_kind: job.kind, running_session: sessionLabel(job.session), next: owner }, {}, [
     `в ките идёт джоб ${job.id} (${job.kind}): один джоб на кит, второй процесс редактора на том же проекте недопустим — дождись его`,
   ])
 }

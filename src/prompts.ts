@@ -13,7 +13,7 @@ const NEW_MOD = (goal: string, modName: string) => `Собери мод Whiskerw
 
 Имя мода: ${modName}. Работай строго по этому порядку, не пропуская шагов.
 
-0. ww_memory_wakeup, затем ww_memory_search по теме задачи. Половина ответов может быть
+0. ww_memory_wakeup, затем ww_memory_search (заголовки, тела — ids=[...]) по теме задачи. Половина ответов может быть
    уже записана: какие подсистемы игры не работают, какие идиомы UE4SS здесь ломаются,
    что решали в соседних модах. Не выясняй заново то, что уже выяснено.
 1. ww_index_status — убедись, что профиль свежий. Если fingerprint не fresh, остановись
@@ -53,7 +53,7 @@ const NEW_LOOM_MOD = (goal: string, modName: string) => `Собери мод Whi
 
 Имя мода: ${modName}. Работай строго по этому порядку, не пропуская шагов.
 
-0. ww_memory_wakeup, затем ww_memory_search по теме задачи и по слову loom. Часть ответов уже
+0. ww_memory_wakeup, затем ww_memory_search (заголовки, тела — ids=[...]) по теме задачи и по слову loom. Часть ответов уже
    записана: грабли языка и кита, что в игре не работает, какие точки реакции уже находили.
    Не выясняй заново то, что уже выяснено.
 1. ww_loom_status — кит, loom.exe, types.json, движок, открыт ли редактор. Ответ
@@ -111,7 +111,9 @@ const NEW_LOOM_MOD = (goal: string, modName: string) => `Собери мод Whi
    игра поднимается с сейвом (.pak подхватывается только при старте игры, горячей
    перезагрузки у него нет). restart=true — согласие закрыть игру: не ставь его, пока в игру
    играет пользователь. Без restart — пошагово: start → status job_id=… → install job_id=…,
-   затем ww_game_process restart save=<имя сейва> wait_for=world.
+   затем ww_game_process restart save=<имя сейва> wait_for=world. Повторный цикл после
+   правки .lm — тот же start с build=true resume=true: validate, сборка, cook, установка,
+   игра с сейвом без паузы; на ошибке validate или сборки цикл останавливается до cook.
 13. Проверка в игре: ww_game_log с source=modlog по префиксу мода (LogMessage — единственный
    канал из shipping-сборки), ww_ui_tree и ww_screenshot для HUD, ww_trace_calls по своим
    функциям. Ошибки Blueprint игра глушит молча: «мод не работает» без строк в modlog — тоже
@@ -127,7 +129,7 @@ const PORT_TO_LOOM = (luaMod: string, modName: string) => `Перенеси Lua-
 
 Имя Loom-мода: ${modName}. Работай строго по этому порядку, не пропуская шагов.
 
-0. ww_memory_wakeup, затем ww_memory_search по теме мода и по слову loom: что уже известно про
+0. ww_memory_wakeup, затем ww_memory_search (заголовки, тела — ids=[...]) по теме мода и по слову loom: что уже известно про
    этот мод, про его подсистемы и про переносы Lua → Blueprint.
 1. Прочитай Lua-мод (Scripts/*.lua) и выпиши каждый RegisterHook: путь функции, что мод делает
    в колбэке, что читает и что меняет. Это и есть список того, что должно появиться в Loom;

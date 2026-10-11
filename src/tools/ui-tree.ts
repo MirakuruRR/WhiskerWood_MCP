@@ -19,7 +19,8 @@ export interface UiTreeArgs {
 // SlateCore.EHorizontalAlignment / EVerticalAlignment, значения из индекса 0.7.200
 function selectionChunk(root: string, objectPath: string | undefined, index: number | undefined): string {
   if (objectPath) {
-    return `local owner = StaticFindObject(${luaStr(objectPath)})
+    const path = objectPath.trim().replace(/^[^\s/]+\s+(?=\/)/, '')
+    return `local owner = StaticFindObject(${luaStr(path)})
 local candidateCount = owner and 1 or 0
 if not owner or not owner:IsValid() then return "root_not_found" end`
   }
@@ -48,10 +49,16 @@ local node = owner["${field}"]
 if not node or not node:IsValid() then return "field_not_found" end`
     : `${selectionChunk(root, objectPath, index)}
 local node = nil
-pcall(function() node = owner.WidgetTree.RootWidget end)
+if isUserWidget(owner) then pcall(function() node = owner.WidgetTree.RootWidget end) end
 if not node or not node:IsValid() then node = owner end`
 
   return `
+local UW = StaticFindObject("/Script/UMG.UserWidget")
+-- Спуск в WidgetTree у не-UserWidget даёт мусорный указатель и нативный AV: только после IsA
+local function isUserWidget(w)
+  local ok, r = pcall(function() return UW ~= nil and UW:IsValid() and w:IsA(UW) end)
+  return ok and r == true
+end
 ${start}
 local ownerFullName = "?"
 pcall(function() ownerFullName = owner:GetFullName() end)
@@ -106,6 +113,12 @@ local function describe(w)
       bits[#bits + 1] = string.format("pos=%.0f,%.0f", topleft.X, topleft.Y)
     end
   end)
+  if w ~= node and isUserWidget(w) then
+    pcall(function()
+      local full = w:GetFullName()
+      bits[#bits + 1] = "path=" .. (full:match("^%S+ (.+)$") or full)
+    end)
+  end
   return table.concat(bits, " ")
 end
 local function walk(w, level)
@@ -114,6 +127,12 @@ local function walk(w, level)
   pcall(function() name = w:GetFName():ToString() end)
   if not matchLower or name:lower():find(matchLower, 1, true) then
     out[#out + 1] = string.rep("  ", level) .. name .. " <" .. describe(w) .. ">"
+  end
+  if isUserWidget(w) then
+    local r
+    pcall(function() r = w.WidgetTree.RootWidget end)
+    if r and r:IsValid() then walk(r, level + 1) end
+    return
   end
   local n = 0
   pcall(function() n = w:GetChildrenCount() end)

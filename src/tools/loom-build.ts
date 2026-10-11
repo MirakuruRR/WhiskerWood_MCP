@@ -3,6 +3,7 @@ import { ServerConfig } from '../config'
 import { renderAiText, Scalar } from '../utils/ai-text'
 import { activeJob, cancelJob, JobRecord, jobProgress, listJobs, readJob, startJob } from '../utils/jobs'
 import { findEditorProcess, KitPaths, kitStatus, unrealEditorCmd } from '../utils/kit'
+import { sessionLabel } from '../utils/session'
 
 export interface LoomBuildArgs {
   action?: 'status' | 'build' | 'cancel'
@@ -17,7 +18,6 @@ const REPORT_TYPE = 'loom_build'
 const DEFAULT_WAIT_MS = 90_000
 const MAX_WAIT_MS = 600_000
 const JOB_TIMEOUT_MS = 30 * 60_000
-const FAST_JOB_MS = 15_000
 const SETTLE_MS = 4_000
 const FRESH_GRACE_MS = 10_000
 const POLL_MS = 1_000
@@ -28,6 +28,8 @@ const LOG_LINE_RE = /LogLoom(?:Build(?:Commandlet)?)?:/
 const SUMMARY_RE = /LoomBuild: (ok|failed), (\d+) errors, (\d+) Blueprints/i
 const LOG_TIME_RE = /^\[(\d{4})\.(\d{2})\.(\d{2})-(\d{2})\.(\d{2})\.(\d{2}):(\d{3})\]/
 const BLUEPRINT_STATUSES = ['built', 'unchanged', 'failed', 'skipped']
+const BP_LOG_RE = /LogBlueprint: (Error|Warning): \[AssetLog\] (\/Game\/[^:\s]+?)(?:\.[^.:\s/]+)?: (.*)$/
+const BP_LOG_LIMIT = 40
 
 interface ReportError {
   file?: string
@@ -200,6 +202,71 @@ function errorLine(e: ReportError): string {
   return where.length > 0 ? `${where}: ${e.message ?? ''}` : (e.message ?? '')
 }
 
+interface BpLogEntry {
+  level: string
+  asset: string
+  message: string
+}
+
+/** Текст ошибки компилятора Blueprint есть только в логе кита: берём строки LogBlueprint той сборки, что записала report.json. */
+function blueprintLogEntries(kit: KitPaths, reportMtime: number): BpLogEntry[] {
+  for (const c of logCandidates(kit)) {
+    if (!existsSync(c.path)) continue
+    const lines = readChunk(c.path, LOG_WINDOW_BYTES).replace(/\r/g, '').split('\n')
+    let last = -1
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!SUMMARY_RE.test(lines[i])) continue
+      const at = logInstant(lines[i])
+      if (at !== null && Math.abs(at - reportMtime) <= 30_000) {
+        last = i
+        break
+      }
+    }
+    if (last < 0) continue
+    let prev = -1
+    for (let i = last - 1; i >= 0; i--) {
+      if (SUMMARY_RE.test(lines[i])) {
+        prev = i
+        break
+      }
+    }
+    const seen = new Set<string>()
+    const out: BpLogEntry[] = []
+    for (const line of lines.slice(prev + 1, last)) {
+      const m = BP_LOG_RE.exec(line)
+      if (!m) continue
+      const key = `${m[1]}|${m[2]}|${m[3]}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ level: m[1].toLowerCase(), asset: m[2], message: m[3].trim() })
+    }
+    return out.slice(0, BP_LOG_LIMIT)
+  }
+  return []
+}
+
+function assetOfError(e: ReportError): string | null {
+  const m = /(?:^|\/)Content\/(.+)\.lm$/.exec((e.file ?? '').replace(/\\/g, '/'))
+  return m ? `/Game/${m[1]}` : null
+}
+
+function errorsWithCompiler(errors: ReportError[], entries: BpLogEntry[]): string {
+  const used = new Set<BpLogEntry>()
+  const lines: string[] = []
+  for (const e of errors) {
+    lines.push(errorLine(e))
+    const asset = assetOfError(e)
+    if (!asset) continue
+    for (const b of entries) {
+      if (b.asset !== asset) continue
+      used.add(b)
+      lines.push(`    ${b.level}: ${b.message}`)
+    }
+  }
+  for (const b of entries) if (!used.has(b)) lines.push(`${b.asset}: ${b.level}: ${b.message}`)
+  return lines.join('\n')
+}
+
 function countAutosaves(kit: KitPaths): number {
   const root = `${kit.kitDir}/${AUTOSAVES}`
   if (!existsSync(root)) return 0
@@ -283,7 +350,9 @@ function reportFacts(kit: KitPaths): { fields: Record<string, Scalar>; blocks: R
   if (other > 0) fields.blueprints_other = other
   fields.errors = errors.length
   if (blueprints.length > 0) blocks.blueprints = blueprints.map(blueprintLine).join('\n')
-  if (errors.length > 0) blocks.errors = errors.map(errorLine).join('\n')
+  const compiler = report.ok === false || errors.length > 0 ? blueprintLogEntries(kit, mtime) : []
+  if (compiler.length > 0) fields.compiler_messages = compiler.length
+  if (errors.length > 0 || compiler.length > 0) blocks.errors = errorsWithCompiler(errors, compiler)
   hints.push(...failureHints(kit, report))
   return { fields, blocks, hints }
 }
@@ -435,11 +504,16 @@ function statusText(config: ServerConfig, kit: KitPaths, args: LoomBuildArgs): s
       )
     } else if (jobStatus === 'running') {
       hints.push(`сборка идёт (джоб ${job.id}): итог появится в report.json, прогресс — в его логе; прервать — ww_loom_build action=cancel job_id=${job.id}`)
-      fields.next = `ww_loom_build action=status job_id=${job.id}`
+      fields.next = `ww_loom_build action=status job_id=${job.id} wait_ms=120000 — дождаться итога`
     } else if (jobStatus === 'cancelled') {
       hints.push(`джоб ${job.id} отменён: report.json мог остаться от прошлой сборки — сверь report_time с job_started`)
     } else if (jobExit !== null && jobExit !== 0) {
       hints.push(`джоб ${job.id} завершился с кодом ${jobExit}: смотри job_log и errors из report.json`)
+    }
+    const reported = mtimeOf(kit.reportJson)
+    if (job.kind === JOB_KIND && (reported === null || reported < job.startedAt - 2_000)) {
+      fields.report_from_job = false
+      hints.push(`report.json старше джоба ${job.id}: поля отчёта выше — от прошлой сборки`)
     }
   } else {
     fields.job_id = 'нет'
@@ -462,6 +536,7 @@ function busyText(config: ServerConfig, kit: KitPaths, job: JobRecord): string {
   const fields: Record<string, Scalar> = { action: 'build', status: 'busy', kit: kit.kitDir }
   const jf = jobFacts(config, job)
   Object.assign(fields, jf.fields)
+  fields.job_session = sessionLabel(job.session)
   if (job.kind === JOB_KIND) {
     fields.next = `прогресс и итог — ww_loom_build action=status job_id=${job.id}`
     return finish(fields, jf.blocks, [
@@ -595,12 +670,12 @@ function startedJobText(config: ServerConfig, kit: KitPaths, job: JobRecord, arg
     mode: 'headless',
     cmd: job.cmd.join(' '),
     job_timeout_min: Math.round(JOB_TIMEOUT_MS / 60_000),
-    next: `ww_loom_build action=status job_id=${job.id} — прогресс, хвост лога и итоговый report.json`,
+    next: `ww_loom_build action=status job_id=${job.id} wait_ms=120000 — дождаться итога: хвост лога и report.json`,
   }
   const jf = jobFacts(config, job)
   Object.assign(fields, jf.fields)
   const hints = [
-    'headless-сборка идёт от десятков секунд до минут (холодный старт редактора дольше): не жди её в блокирующем вызове, статус читается через action=status',
+    'headless-сборка не уложилась в wait_ms (холодный старт редактора идёт минуты): action=status с тем же job_id и wait_ms ждёт её дальше',
     `джоб переживает перезапуск MCP-сервера; прервать — ww_loom_build action=cancel job_id=${job.id}`,
   ]
   if (args.force === true) hints.push('force: собираются все Blueprint\'ы, включая неизменившиеся')
@@ -635,7 +710,7 @@ async function headlessBuildText(config: ServerConfig, kit: KitPaths, args: Loom
   }
 
   const job = started.job
-  const done = await waitJob(config, job.id, FAST_JOB_MS)
+  const done = await waitJob(config, job.id, args.wait_ms === 0 ? 0 : clampWait(args.wait_ms))
   if (done && done.status !== 'running') return finishedJobText(config, kit, done)
   return startedJobText(config, kit, job, args)
 }
@@ -730,5 +805,9 @@ export async function handleLoomBuild(config: ServerConfig, args: LoomBuildArgs)
   const kit = st.kit
   if (action === 'build') return buildText(config, kit, args)
   if (action === 'cancel') return cancelText(config, kit, args)
+  if (args.wait_ms !== undefined && args.wait_ms > 0) {
+    const target = args.job_id ? readJob(config, args.job_id) : activeJob(config)
+    if (target && target.kind === JOB_KIND && target.status === 'running') await waitJob(config, target.id, clampWait(args.wait_ms))
+  }
   return statusText(config, kit, args)
 }

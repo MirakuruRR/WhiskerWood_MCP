@@ -14,13 +14,17 @@ import {
 } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import { ServerConfig } from '../config'
-import { renderAiText, Scalar } from '../utils/ai-text'
+import { aiTextBlock, aiTextFields, renderAiText, Scalar } from '../utils/ai-text'
 import { activeJob, cancelJob, jobProgress, JobRecord, listJobs, readJob, startJob, updateJob } from '../utils/jobs'
 import { findEditorProcess, kitEngineVersion, KitPaths, kitStatus, runUatBat, savedModsDir, savedModsSandbox } from '../utils/kit'
 import { failureDetail, unrealPakList } from '../utils/loom'
 import { PathSandboxError } from '../utils/path-sandbox'
 import { findGameProcess, findSave, readState } from '../utils/game-process'
 import { doStart, doStop, RELAUNCH_PAUSE_MS } from './game-process'
+import { handleGameControl } from './game-control'
+import { handleLoomBuild } from './loom-build'
+import { handleLoomValidate } from './loom-validate'
+import { gameOwnership, ownershipHint, sessionLabel } from '../utils/session'
 
 export interface LoomInstallArgs {
   action: 'start' | 'status' | 'install' | 'cancel'
@@ -29,6 +33,9 @@ export interface LoomInstallArgs {
   skip_cook?: boolean
   restart?: boolean
   save?: string
+  build?: boolean
+  resume?: boolean
+  takeover?: boolean
   wait_ms?: number
   version?: string
 }
@@ -36,6 +43,7 @@ export interface LoomInstallArgs {
 interface RestartOpts {
   save: string | null
   saveSource: 'arg' | 'last_launch' | 'none'
+  resume: boolean
 }
 
 const REPORT_TYPE = 'loom_install'
@@ -43,6 +51,9 @@ const MOD_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
 export const PAK_LIMIT_BYTES = 123_999_999
 const NEXT_RESTART = 'pak-мод подхватывается только при старте игры: тот же вызов с restart=true save=<сохранение> или ww_game_process restart save=<сохранение> wait_for=world'
 const DEFAULT_COOK_WAIT_MS = 300_000
+const MAX_BUILD_WAIT_MS = 300_000
+const COPY_ATTEMPTS = 5
+const COPY_RETRY_MS = 1_500
 const MAX_COOK_WAIT_MS = 600_000
 const POLL_MS = 1_000
 
@@ -595,17 +606,45 @@ async function settle(
     }
   }
   const backup = backupExisting(config, targetDir, modName)
-  try {
-    mkdirSync(targetDir, { recursive: true })
-    copyFileSync(probe.file, pakTarget)
-    copyFileSync(source.upluginPath, upluginTarget)
-  } catch (e) {
+  let copyError: Error | null = null
+  let attempts = 0
+  for (; attempts < COPY_ATTEMPTS; attempts++) {
+    if (attempts > 0) {
+      await sleep(COPY_RETRY_MS)
+      if (findGameProcess(config)) {
+        return {
+          fields: {
+            status: 'game_started_meanwhile',
+            ...base,
+            target_dir: targetDir,
+            error: copyError?.message ?? '',
+            ...gameOwnership(config).fields,
+            ...(backup ? { backup } : {}),
+            hint: 'пока пак копировался, игру кто-то запустил (другая сессия или человек): копирование прервано, пак не тронут или установлен частично — повтори, когда игра свободна',
+          },
+        }
+      }
+    }
+    try {
+      mkdirSync(targetDir, { recursive: true })
+      copyFileSync(probe.file, pakTarget)
+      copyFileSync(source.upluginPath, upluginTarget)
+      copyError = null
+      break
+    } catch (e) {
+      copyError = e as Error
+      const code = (e as NodeJS.ErrnoException).code
+      if (code !== 'EBUSY' && code !== 'EPERM' && code !== 'EACCES') break
+    }
+  }
+  if (copyError) {
     return {
       fields: {
         status: 'copy_failed',
         ...base,
         target_dir: targetDir,
-        error: (e as Error).message,
+        error: copyError.message,
+        copy_attempts: Math.min(attempts + 1, COPY_ATTEMPTS),
         ...(backup ? { backup } : {}),
         hint: 'файл в <saved>/mods занят или недоступен: проверь, что его не держит другой процесс (в том числе игра), и повтори',
       },
@@ -730,6 +769,7 @@ function busyReport(config: ServerConfig, job: JobRecord, modName: string): stri
     mod: modName,
     running_job: job.id,
     running_kind: job.kind,
+    running_session: sessionLabel(job.session),
     progress: p?.progress ?? '',
     hint:
       job.kind === 'cook'
@@ -785,12 +825,25 @@ function prefixed(fields: Record<string, Scalar>): Record<string, Scalar> {
 /** Сейв для перезапуска: явный, иначе тот, с которым игру поднимали через MCP в прошлый раз. */
 function restartOpts(config: ServerConfig, args: LoomInstallArgs): { ok: true; opts: RestartOpts | null } | { ok: false; text: string } {
   if (args.restart !== true) {
-    if (args.save) return { ok: false, text: report({ status: 'bad_args', hint: 'save работает только вместе с restart=true' }) }
+    if (args.save || args.resume) return { ok: false, text: report({ status: 'bad_args', hint: 'save и resume работают только вместе с restart=true' }) }
     return { ok: true, opts: null }
+  }
+  if (args.takeover !== true) {
+    const own = gameOwnership(config)
+    if (own.conflict !== 'none') {
+      return {
+        ok: false,
+        text: report({ status: own.conflict === 'external' ? 'game_not_ours' : 'game_owned_by_other_session', ...own.fields, hint: `${ownershipHint(own)}; ничего не собрано и не остановлено` }),
+      }
+    }
   }
   const asked = args.save?.trim()
   const name = asked || readState(config).save || null
-  if (!name) return { ok: true, opts: { save: null, saveSource: 'none' } }
+  const resume = args.resume === true
+  if (!name) {
+    if (resume) return { ok: false, text: report({ status: 'bad_args', hint: 'resume нужен сейв: без него игра поднимется в главное меню, снимать паузу не с чего' }) }
+    return { ok: true, opts: { save: null, saveSource: 'none', resume } }
+  }
   const entry = findSave(config, name)
   if (!entry) {
     return {
@@ -804,7 +857,7 @@ function restartOpts(config: ServerConfig, args: LoomInstallArgs): { ok: true; o
       }),
     }
   }
-  return { ok: true, opts: { save: entry.name, saveSource: asked ? 'arg' : 'last_launch' } }
+  return { ok: true, opts: { save: entry.name, saveSource: asked ? 'arg' : 'last_launch', resume } }
 }
 
 async function stopForCopy(config: ServerConfig): Promise<Record<string, Scalar>> {
@@ -821,11 +874,19 @@ async function relaunch(config: ServerConfig, opts: RestartOpts): Promise<Record
   await sleep(RELAUNCH_PAUSE_MS)
   await doStart(config, { save: opts.save ?? undefined, wait_for: opts.save ? 'world' : 'menu' }, g)
   const ready = g.status === 'save_loaded' || g.status === 'running'
+  const resumed: Record<string, Scalar> = {}
+  if (ready && opts.resume && g.status === 'save_loaded') {
+    const ctl = aiTextFields(await handleGameControl(null, config, { action: 'resume' }))
+    resumed.resume = ctl.status ?? 'unknown'
+    if (ctl.paused !== undefined) resumed.resume_paused = ctl.paused
+    if (ctl.hint) resumed.resume_hint = ctl.hint
+  }
   return {
     restart: ready ? 'done' : 'failed',
     save: opts.save ?? '',
     save_source: opts.saveSource,
     ...prefixed(g),
+    ...resumed,
     next: ready
       ? `игра поднята с новым паком${opts.save ? '' : ' (главное меню: сейв не задан и прошлого запуска с сейвом нет)'}; кадр — ww_game_control action=camera и ww_screenshot`
       : 'пак установлен, но игра не дошла до готовности: ww_game_process action=status, при краше — ww_crash_report',
@@ -882,10 +943,21 @@ async function startAction(config: ServerConfig, args: LoomInstallArgs): Promise
   const ro = restartOpts(config, args)
   if (!ro.ok) return ro.text
 
+  if (args.build && args.skip_cook) {
+    return report({ status: 'bad_args', hint: 'build пересобирает Blueprint, а skip_cook ставит старый пак: вместе они не имеют смысла' })
+  }
+
   const running = activeJob(config)
   if (running) return busyReport(config, running, modName)
 
   if (args.skip_cook) return settleMod(config, kit, modName, null, 'install', ro.opts)
+
+  const prep: Record<string, Scalar> = {}
+  if (args.build) {
+    const pre = await validateAndBuild(config, modName)
+    if (!pre.ok) return pre.text
+    Object.assign(prep, pre.fields)
+  }
 
   const bat = runUatBat(kit)
   if (!bat || !existsSync(bat)) {
@@ -911,29 +983,86 @@ async function startAction(config: ServerConfig, args: LoomInstallArgs): Promise
   }
 
   const id = started.job.id
-  if (ro.opts) {
-    const budget = Math.min(Math.max(args.wait_ms ?? DEFAULT_COOK_WAIT_MS, 1_000), MAX_COOK_WAIT_MS)
-    const job = await waitCook(config, id, budget)
-    if (job && job.status === 'done') return settleMod(config, kit, modName, job, 'install', ro.opts)
-    if (job && job.status !== 'running') return unfinishedCookReport(config, job, modName, 'install') ?? report({ status: job.status, job_id: id })
-    return report({
+  if (ro.opts) return withFields(await cookThenRestart(config, kit, modName, id, args, ro.opts), prep)
+  if (args.wait_ms !== undefined && args.wait_ms > 0) {
+    const job = await waitCook(config, id, Math.min(args.wait_ms, MAX_COOK_WAIT_MS))
+    if (job && job.status === 'done') return withFields(await settleMod(config, kit, modName, job, 'check'), prep)
+    if (job && job.status !== 'running') return withFields(unfinishedCookReport(config, job, modName, 'status') ?? report({ status: job.status, job_id: id }), prep)
+  }
+  return withFields(
+    report({
       status: 'cooking',
       mod: modName,
       job_id: id,
-      waited_ms: budget,
-      note: 'cook не уложился в wait_ms: игра не тронута, ничего не установлено',
-      next: `ww_loom_install action=install job_id=${id} restart=true${ro.opts.save ? ` save=${ro.opts.save}` : ''} — когда cook закончится (прогресс — action=status job_id=${id})`,
-    })
+      log: started.job.logPath,
+      cwd: kit.kitDir,
+      pak_output: kit.pakOutputDir,
+      ...(src.source.palPath ? {} : { warning: `нет PAL_${modName}.uasset — ассеты уедут в общий pakchunk0, и установка не пройдёт проверку чужих ассетов` }),
+      next: `ww_loom_install action=status job_id=${id} wait_ms=300000 — дождаться cook (идёт минуты); при status=ready_to_install — action=install job_id=${id}`,
+    }),
+    prep,
+  )
+}
+
+/** validate → build перед cook: на первой ошибке цикл стоит, игра и пак не тронуты. */
+async function validateAndBuild(config: ServerConfig, modName: string): Promise<{ ok: true; fields: Record<string, Scalar> } | { ok: false; text: string }> {
+  const vText = await handleLoomValidate(config, { mod_name: modName })
+  const v = aiTextFields(vText)
+  const vErrors = Number(v.errors ?? '0')
+  if (v.status !== 'ok' || vErrors > 0) {
+    return {
+      ok: false,
+      text: report(
+        { status: 'validate_failed', mod: modName, stage: 'validate', validate_status: v.status ?? '?', validate_errors: vErrors, hint: 'ошибки ww_loom_validate — ниже; ничего не собрано, игра не тронута' },
+        { validate: vText },
+      ),
+    }
   }
+  const bText = await handleLoomBuild(config, { action: 'build', wait_ms: MAX_BUILD_WAIT_MS })
+  const b = aiTextFields(bText)
+  const built = b.status === 'done' || b.status === 'picked_up' || b.status === 'already_fresh'
+  if (b.report_ok !== 'true' || !built) {
+    const errors = aiTextBlock(bText, 'errors')
+    const pending = b.status === 'running' || b.status === 'started'
+    return {
+      ok: false,
+      text: report(
+        {
+          status: 'build_failed',
+          mod: modName,
+          stage: 'build',
+          build_status: b.status ?? '?',
+          build_report_ok: b.report_ok ?? '?',
+          ...(b.job_id ? { build_job_id: b.job_id } : {}),
+          hint: pending
+            ? `сборка не уложилась в ожидание: ww_loom_build action=status job_id=${b.job_id ?? '…'} wait_ms=…, затем этот вызов снова`
+            : 'сборка Blueprint не прошла: cook не запускался, игра не тронута',
+        },
+        errors ? { errors } : { build: bText },
+      ),
+    }
+  }
+  return { ok: true, fields: { validate: `ok, warnings ${v.warnings ?? 0}`, build: `${b.status}, built ${b.blueprints_built ?? '?'}` } }
+}
+
+function withFields(text: string, extra: Record<string, Scalar>): string {
+  const lines = text.split('\n')
+  lines.splice(1, 0, ...Object.entries(extra).map(([k, v]) => `${k}: ${v}`))
+  return lines.join('\n')
+}
+
+async function cookThenRestart(config: ServerConfig, kit: KitPaths, modName: string, id: string, args: LoomInstallArgs, opts: RestartOpts): Promise<string> {
+  const budget = Math.min(Math.max(args.wait_ms ?? DEFAULT_COOK_WAIT_MS, 1_000), MAX_COOK_WAIT_MS)
+  const job = await waitCook(config, id, budget)
+  if (job && job.status === 'done') return settleMod(config, kit, modName, job, 'install', opts)
+  if (job && job.status !== 'running') return unfinishedCookReport(config, job, modName, 'install') ?? report({ status: job.status, job_id: id })
   return report({
     status: 'cooking',
     mod: modName,
     job_id: id,
-    log: started.job.logPath,
-    cwd: kit.kitDir,
-    pak_output: kit.pakOutputDir,
-    ...(src.source.palPath ? {} : { warning: `нет PAL_${modName}.uasset — ассеты уедут в общий pakchunk0, и установка не пройдёт проверку чужих ассетов` }),
-    next: `ww_loom_install action=status job_id=${id} — прогресс cook (идёт минуты); при status=ready_to_install — action=install job_id=${id}`,
+    waited_ms: budget,
+    note: 'cook не уложился в wait_ms: игра не тронута, ничего не установлено',
+    next: `ww_loom_install action=install job_id=${id} restart=true${opts.save ? ` save=${opts.save}` : ''}${opts.resume ? ' resume=true' : ''} — когда cook закончится (прогресс — action=status job_id=${id})`,
   })
 }
 
@@ -1049,7 +1178,10 @@ async function statusAction(config: ServerConfig, args: LoomInstallArgs): Promis
   const { modArg } = picked
   if (!picked.job && modArg) return builtPakAction(config, modArg, 'check')
 
-  const job = picked.job ?? currentCookJob(config, null)
+  let job = picked.job ?? currentCookJob(config, null)
+  if (job && job.status === 'running' && args.wait_ms !== undefined && args.wait_ms > 0) {
+    job = (await waitCook(config, job.id, Math.min(args.wait_ms, MAX_COOK_WAIT_MS))) ?? job
+  }
   if (!job) {
     return report({
       status: 'no_job',

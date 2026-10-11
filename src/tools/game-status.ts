@@ -5,6 +5,7 @@ import { getBridge } from '../utils/bridge-client'
 import { lastError } from '../utils/ue4ss-log'
 import { renderAiText, Scalar } from '../utils/ai-text'
 import { echoFields, statusFields } from './bridge-common'
+import { gameOwnership } from '../utils/session'
 
 export async function handleGameStatus(ctx: GameContext | null, config: ServerConfig): Promise<string> {
   const bridge = getBridge(config)
@@ -24,7 +25,7 @@ export async function handleGameStatus(ctx: GameContext | null, config: ServerCo
     fields.hint = 'heartbeat моста устарел: игра закрыта, подвисла или грузит уровень'
   } else {
     fields.status = 'running'
-    Object.assign(fields, statusFields(st))
+    Object.assign(fields, statusFields(st), gameOwnership(config).fields)
     if (st.lastError) fields.last_bridge_error = st.lastError
   }
 

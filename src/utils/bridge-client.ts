@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { ServerConfig } from '../config'
+import { touchActivity } from './session-id'
 
 const HEARTBEAT_STALE_MS = 3000
 const POLL_INTERVAL_MS = 25
@@ -115,6 +116,7 @@ export class BridgeClient {
 
     const start = await this.readStatusStable()
     if (!this.isAlive(start)) return { status: 'game_not_running' }
+    touchActivity(`${this.root}/../game-activity.json`, op)
     const session = start!.session
     const id = randomBytes(4).toString('hex')
     const req = `id=${id}\nop=${op}\ntimeout_ms=${timeoutMs}\n--payload--\n${payload}`

@@ -67,39 +67,11 @@ const NUMERIC_KINDS = new Set([
   'FloatProperty',
   'DoubleProperty',
 ])
-const STRING_KINDS = new Set(['NameProperty', 'StrProperty', 'TextProperty', 'Utf8StrProperty', 'AnsiStrProperty'])
-const UNSUPPORTED_KINDS = new Set([
-  'ArrayProperty',
-  'SetProperty',
-  'MapProperty',
-  'DelegateProperty',
-  'MulticastDelegateProperty',
-  'MulticastInlineDelegateProperty',
-  'MulticastSparseDelegateProperty',
-  'FieldPathProperty',
-])
+const STRING_KINDS = new Set(['StrProperty', 'Utf8StrProperty', 'AnsiStrProperty'])
 
 const BP_ONLY_ALLOWED = new Set(['callable', 'pure'])
 
-function jsonToLuaLiteral(value: unknown): string {
-  if (value === null || value === undefined) return 'nil'
-  if (typeof value === 'boolean') return value ? 'true' : 'false'
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '0'
-  if (typeof value === 'string') return luaStr(value)
-  if (Array.isArray(value)) return `{ ${value.map(jsonToLuaLiteral).join(', ')} }`
-  if (typeof value === 'object') {
-    const parts = Object.entries(value as Record<string, unknown>).map(
-      ([k, v]) => `${/^[A-Za-z_]\w*$/.test(k) ? k : `[${luaStr(k)}]`} = ${jsonToLuaLiteral(v)}`,
-    )
-    return `{ ${parts.join(', ')} }`
-  }
-  return 'nil'
-}
-
 function argExprFor(ctx: GameContext, p: ArgSpec, raw: unknown): { expr: string } | { error: string } {
-  if (UNSUPPORTED_KINDS.has(p.prop_kind)) {
-    return { error: `тип ${p.prop_kind} не поддержан ww_call; для него используй ww_game_eval` }
-  }
   if (OBJECT_KINDS.has(p.prop_kind)) {
     if (typeof raw !== 'string') return { error: 'ожидается строка: путь объекта или короткое имя класса' }
     return { expr: `WW_RESOLVE(${luaStr(raw)})` }
@@ -125,7 +97,20 @@ function argExprFor(ctx: GameContext, p: ArgSpec, raw: unknown): { expr: string 
     if (typeof raw !== 'string') return { error: 'ожидается строка' }
     return { expr: luaStr(raw) }
   }
-  return { expr: jsonToLuaLiteral(raw) }
+  if (p.prop_kind === 'NameProperty') {
+    if (typeof raw !== 'string') return { error: 'ожидается строка' }
+    return { expr: `FName(${luaStr(raw)})` }
+  }
+  if (p.prop_kind === 'TextProperty') {
+    if (typeof raw !== 'string') return { error: 'ожидается строка' }
+    return { expr: `StaticFindObject("/Script/Engine.KismetTextLibrary"):Conv_StringToText(${luaStr(raw)})` }
+  }
+  if (p.prop_kind === 'StructProperty') {
+    return {
+      error: `структуру ${p.type_name ?? ''} из JSON собрать нельзя: UE4SS роняет игру (AV 0x70). Бери живую структуру через ww_game_eval или зови функцию-обёртку без структурных параметров`,
+    }
+  }
+  return { error: `тип ${p.prop_kind} не поддержан ww_call; для него используй ww_game_eval` }
 }
 
 function objectSelectionChunk(object: string, index: number | undefined): string {
@@ -405,6 +390,7 @@ async function handleModCallFunction(
     mod_flags: s.flags.join(' | ') || 'нет',
     bp: access.status,
     bp_note: access.note,
+    ...(s.inheritedFrom ? { mod_declared_in: s.inheritedFrom } : {}),
     ...(s.superPath ? { mod_parent: s.superPath } : {}),
   }
 

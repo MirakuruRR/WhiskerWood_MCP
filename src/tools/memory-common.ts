@@ -6,27 +6,43 @@ import { MEMORY_BM25, MEMORY_COLUMNS, MemoryRow, oneLine, openMemoryDb, splitTag
 
 export const BODY_PREVIEW = 400
 
-export function memoryResult(row: MemoryRow, opts: { fullBody?: boolean } = {}): AiTextResult {
+export type MemoryBody = 'none' | 'preview' | 'full'
+
+export function memoryResult(row: MemoryRow, opts: { body?: MemoryBody } = {}): AiTextResult {
+  const body = opts.body ?? 'preview'
   const fields: Record<string, string | number | boolean> = {
     public_id: row.public_id,
     category: row.category,
     importance: row.importance,
-    status: row.status,
   }
+  if (body !== 'none' || row.status !== 'active') fields.status = row.status
   if (row.mod_name) fields.mod_name = row.mod_name
   // общая база сообщества против проверенного на этом стенде — разного веса знание
   if (row.origin === 'seed') fields.origin = 'seed'
   if (row.tags) fields.tags = row.tags
   fields.summary = oneLine(row.summary)
-  fields.updated_at = row.updated_at
+  if (body !== 'none') fields.updated_at = row.updated_at
   if (row.status !== 'active') {
     fields.invalidated_at = row.invalidated_at ?? 'unknown'
     fields.invalidation_reason = oneLine(row.invalidation_reason ?? '')
   }
-  const body = row.body.trim()
-  if (body.length === 0) return { fields }
-  const shown = opts.fullBody || body.length <= BODY_PREVIEW ? body : `${body.slice(0, BODY_PREVIEW)}…`
+  const text = row.body.trim()
+  if (text.length === 0) return { fields }
+  if (body === 'none') {
+    fields.body_chars = text.length
+    return { fields }
+  }
+  const shown = body === 'full' || text.length <= BODY_PREVIEW ? text : `${text.slice(0, BODY_PREVIEW)}…`
   return { fields, blocks: { body: shown } }
+}
+
+export function memoriesByIds(db: Database, ids: string[]): MemoryRow[] {
+  if (ids.length === 0) return []
+  const rows = db
+    .query(`SELECT ${MEMORY_COLUMNS} FROM project_memories WHERE public_id IN (${ids.map(() => '?').join(', ')})`)
+    .all(...(ids as never[])) as MemoryRow[]
+  const order = new Map(ids.map((id, i) => [id, i]))
+  return rows.sort((x, y) => (order.get(x.public_id) ?? 0) - (order.get(y.public_id) ?? 0))
 }
 
 export interface MemoryFilter {

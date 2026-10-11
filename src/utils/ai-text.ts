@@ -67,3 +67,21 @@ export function errorText(reportType: string, status: string, message: string): 
     results: lines.length > 1 ? [{ fields: {}, blocks: { details: message } }] : undefined,
   })
 }
+
+/** Поля шапки отчёта renderAiText — для инструментов, которые зовут друг друга. */
+export function aiTextFields(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    if (line.length === 0 || line.startsWith('[')) break
+    const i = line.indexOf(': ')
+    if (i > 0) out[line.slice(0, i)] = line.slice(i + 2)
+  }
+  return out
+}
+
+export function aiTextBlock(text: string, name: string): string | null {
+  const start = text.indexOf(`<<<${name}\n`)
+  if (start < 0) return null
+  const end = text.indexOf(`\n${name}>>>`, start)
+  return end < 0 ? null : text.slice(start + name.length + 4, end)
+}

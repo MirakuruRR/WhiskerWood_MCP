@@ -36,7 +36,7 @@ export function handleMemoryInvalidate(config: ServerConfig, args: MemoryInvalid
         invalidated_at: row.invalidated_at ?? 'unknown',
         invalidation_reason: oneLine(row.invalidation_reason ?? ''),
       },
-      results: [memoryResult(row, { fullBody: true })],
+      results: [memoryResult(row, { body: 'full' })],
     })
   }
 
@@ -54,6 +54,6 @@ export function handleMemoryInvalidate(config: ServerConfig, args: MemoryInvalid
       public_id: row.public_id,
       hint: 'запись погашена мягко: из поиска и линта уходит, история остаётся (include_invalidated: true в ww_memory_search)',
     },
-    results: [memoryResult(after, { fullBody: true })],
+    results: [memoryResult(after, { body: 'full' })],
   })
 }

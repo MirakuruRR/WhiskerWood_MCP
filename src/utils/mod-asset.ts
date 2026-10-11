@@ -78,6 +78,7 @@ export interface ModFunctionSignature {
   classPath: string
   classKind: string | null
   superPath: string | null
+  inheritedFrom?: string
   params: ModParam[]
   flags: string[]
   source: string
@@ -114,8 +115,11 @@ interface PakProp {
   Struct?: unknown
   Inner?: PakProp
   Element?: PakProp
+  ElementProp?: PakProp
   Key?: PakProp
+  KeyProp?: PakProp
   Value?: PakProp
+  ValueProp?: PakProp
   ValueType?: PakProp
 }
 
@@ -191,10 +195,10 @@ function elementTypeName(p: PakProp | undefined): string | null {
 function kindAndType(p: PakProp): { prop_kind: string; type_name: string | null; inner_type: string | null } {
   const t = String(p.Type ?? 'unknown')
   if (t === 'ArrayProperty') return { prop_kind: t, type_name: 'TArray', inner_type: elementTypeName(p.Inner) }
-  if (t === 'SetProperty') return { prop_kind: t, type_name: 'TSet', inner_type: elementTypeName(p.Element ?? p.Inner) }
+  if (t === 'SetProperty') return { prop_kind: t, type_name: 'TSet', inner_type: elementTypeName(p.ElementProp ?? p.Element ?? p.Inner) }
   if (t === 'MapProperty') {
-    const key = elementTypeName(p.Key)
-    const value = elementTypeName(p.Value)
+    const key = elementTypeName(p.KeyProp ?? p.Key)
+    const value = elementTypeName(p.ValueProp ?? p.Value)
     return { prop_kind: t, type_name: 'TMap', inner_type: key && value ? `${key}, ${value}` : (key ?? value) }
   }
   if (t === 'OptionalProperty') {
@@ -430,7 +434,9 @@ function superStructName(ref: PakRef): string | null {
   const name = quotedName(ref)
   if (!name) return null
   const outer = typeof ref.ObjectPath === 'string' ? ref.ObjectPath : ''
-  return outer.startsWith('/') ? `${outer}.${name}` : name
+  if (outer.startsWith('/')) return `${outer}.${name}`
+  const packaged = /^[^/]+\/Content\/(.+?)(?:\.\d+)?$/.exec(outer)
+  return packaged ? `/Game/${packaged[1]}.${name}` : name
 }
 
 function classExportOf(exports: PakExport[]): PakExport | null {
@@ -485,7 +491,7 @@ export function modClassInfo(config: ServerConfig, ref: ModAssetRef): ModClassRe
   }
 }
 
-export function modSignature(config: ServerConfig, ref: ModAssetRef): ModSignatureResult {
+export function modSignature(config: ServerConfig, ref: ModAssetRef, depth = 0): ModSignatureResult {
   if (!ref.functionName) {
     return { ok: false, status: 'function_required', detail: 'в пути мода не указана функция', searched: '' }
   }
@@ -514,6 +520,11 @@ export function modSignature(config: ServerConfig, ref: ModAssetRef): ModSignatu
     }
   }
   const fn = pakFunctionSignature(exports, ref.functionName)
+  const parentRef = !fn && depth < 8 && info.info.superPath ? parseModAssetPath(`${info.info.superPath}:${ref.functionName}`) : null
+  if (parentRef) {
+    const inherited = modSignature(config, parentRef, depth + 1)
+    if (inherited.ok) return { ok: true, signature: { ...inherited.signature, inheritedFrom: inherited.signature.inheritedFrom ?? inherited.signature.classPath } }
+  }
   if (!fn) {
     const similar = exports
       .filter((e) => e.Type === 'Function' && typeof e.Name === 'string' && e.Name.toLowerCase().includes(ref.functionName!.toLowerCase()))
@@ -524,7 +535,12 @@ export function modSignature(config: ServerConfig, ref: ModAssetRef): ModSignatu
       status: 'mod_function_not_found',
       detail: `в ${info.info.classPath} нет функции ${ref.functionName}`,
       searched,
-      error: similar.length > 0 ? `похожие: ${similar.join(', ')}` : undefined,
+      error:
+        similar.length > 0
+          ? `похожие: ${similar.join(', ')}`
+          : info.info.superPath && !info.info.superPath.startsWith(MOD_ASSET_PREFIX)
+            ? `родитель ${info.info.superPath} — класс игры: его функцию зови по пути игры`
+            : undefined,
     }
   }
   return {
@@ -540,6 +556,73 @@ export function modSignature(config: ServerConfig, ref: ModAssetRef): ModSignatu
       source: info.info.source,
     },
   }
+}
+
+const SAFE_ELEMENT_KINDS = new Set([
+  'BoolProperty', 'ByteProperty', 'EnumProperty', 'IntProperty', 'Int8Property', 'Int16Property', 'Int64Property',
+  'UInt16Property', 'UInt32Property', 'UInt64Property', 'FloatProperty', 'DoubleProperty',
+  'StrProperty', 'NameProperty', 'TextProperty', 'ObjectProperty', 'ClassProperty', 'StructProperty',
+])
+
+export interface ContainerSafety {
+  safe: string[]
+  unsafe: string[]
+  assets: number
+  error?: string
+}
+
+function packagedAsset(ref: unknown): string | null {
+  if (typeof ref !== 'object' || ref === null) return null
+  const path = (ref as PakRef).ObjectPath ?? ''
+  if (path.startsWith('/Game/Mods/')) return path.replace(/\.\d+$/, '')
+  const m = /^[^/]+\/Content\/(Mods\/.+?)(?:\.\d+)?$/.exec(path)
+  return m ? `/Game/${m[1]}` : null
+}
+
+/**
+ * Какие TMap/TSet экземпляра можно обходить из Lua: тип элементов виден только в паке.
+ * Обходит класс, его родителей-модов и структуры модов, на которые они ссылаются; имена — как в рантайме (с GUID у полей структур), в нижнем регистре.
+ */
+export function modContainerSafety(config: ServerConfig, ref: ModAssetRef): ContainerSafety {
+  const safe = new Set<string>()
+  const unsafe = new Set<string>()
+  const queue: string[] = [ref.assetPath]
+  const done = new Set<string>()
+  let error: string | undefined
+  while (queue.length > 0 && done.size < 64) {
+    const asset = queue.shift()!
+    if (done.has(asset)) continue
+    done.add(asset)
+    const assetRef = parseModAssetPath(asset)
+    if (!assetRef) continue
+    const { target } = findPakTarget(config, assetRef)
+    if (!target) continue
+    let exports: PakExport[]
+    try {
+      exports = runSidecarJson(config, target, assetRef.assetPath)
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e)
+      continue
+    }
+    for (const exp of exports) {
+      const t = String(exp.Type ?? '')
+      if (!/Class$/.test(t) && t !== 'UserDefinedStruct') continue
+      const sup = exp.SuperStruct ? packagedAsset(exp.SuperStruct) : null
+      if (sup) queue.push(sup)
+      for (const p of exp.ChildProperties ?? []) {
+        const elems = [p.Inner, p.ElementProp ?? p.Element, p.KeyProp ?? p.Key, p.ValueProp ?? p.Value].filter((x): x is PakProp => !!x)
+        for (const sub of [p, ...elems]) {
+          const st = sub.Type === 'StructProperty' ? packagedAsset(sub.Struct) : null
+          if (st) queue.push(st)
+        }
+        if (p.Type !== 'MapProperty' && p.Type !== 'SetProperty') continue
+        const name = String(p.Name ?? '').toLowerCase()
+        if (elems.length > 0 && elems.every((x) => SAFE_ELEMENT_KINDS.has(String(x.Type ?? '')))) safe.add(name)
+        else unsafe.add(name)
+      }
+    }
+  }
+  return { safe: [...safe], unsafe: [...unsafe], assets: done.size, ...(error ? { error } : {}) }
 }
 
 export interface ModLiveProbe {

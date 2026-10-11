@@ -6,11 +6,14 @@ import { memoryResult } from './memory-common'
 export interface MemoryWakeupArgs {
   mod_name?: string
   limit?: number
+  offset?: number
+  full?: boolean
 }
 
 export function handleMemoryWakeup(config: ServerConfig, args: MemoryWakeupArgs): string {
   const db = openMemoryDb(config)
   const limit = Math.min(Math.max(args.limit ?? 20, 1), 100)
+  const offset = Math.max(args.offset ?? 0, 0)
 
   const totals = db
     .query(
@@ -45,6 +48,8 @@ export function handleMemoryWakeup(config: ServerConfig, args: MemoryWakeupArgs)
     )
     .all() as Array<{ m: string; n: number }>
 
+  const active = byCategory.reduce((n, r) => n + r.n, 0)
+
   const openTodos = (db
     .query(`SELECT COUNT(*) AS n FROM project_memories WHERE status = 'active' AND category = 'todo'${modFilter}`)
     .get(...(modParams as never[])) as { n: number }).n
@@ -54,9 +59,9 @@ export function handleMemoryWakeup(config: ServerConfig, args: MemoryWakeupArgs)
       `SELECT ${MEMORY_COLUMNS} FROM project_memories
        WHERE status = 'active'${modFilter}
        ORDER BY importance DESC, updated_at DESC
-       LIMIT ?`,
+       LIMIT ? OFFSET ?`,
     )
-    .all(...(modParams as never[]), limit) as MemoryRow[]
+    .all(...(modParams as never[]), limit, offset) as MemoryRow[]
 
   return renderAiText({
     reportType: 'memory_wakeup',
@@ -68,11 +73,13 @@ export function handleMemoryWakeup(config: ServerConfig, args: MemoryWakeupArgs)
       open_todos: openTodos,
       by_category: byCategory.map((r) => `${r.category}=${r.n}`).join('; ') || 'нет',
       by_mod: byMod.map((r) => `${r.m}=${r.n}`).join('; ') || 'нет',
-      hint: 'детали по теме ищи через ww_memory_search; устаревшее гаси через ww_memory_invalidate, а не переписывай молча',
+      ...(offset > 0 ? { offset } : {}),
+      ...(active > offset + rows.length ? { next_offset: offset + rows.length } : {}),
+      hint: 'тела записей — ww_memory_search ids=[public_id, ...], поиск по теме — ww_memory_search query=...; устаревшее гаси через ww_memory_invalidate, а не переписывай молча',
     },
-    results: rows.map((r) => memoryResult(r)),
-    totalFound: totals.active ?? 0,
-    truncated: (totals.active ?? 0) > rows.length,
+    results: rows.map((r) => memoryResult(r, { body: args.full === true ? 'preview' : 'none' })),
+    totalFound: active,
+    truncated: active > offset + rows.length,
     limit,
   })
 }

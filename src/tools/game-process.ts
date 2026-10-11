@@ -24,6 +24,7 @@ import {
   WaitTarget,
   writeState,
 } from '../utils/game-process'
+import { gameOwnership, ownershipHint, SESSION } from '../utils/session'
 
 export interface GameProcessArgs {
   action?: 'status' | 'start' | 'stop' | 'restart' | 'load_save' | 'list_saves'
@@ -31,6 +32,7 @@ export interface GameProcessArgs {
   args?: string[]
   wait_for?: WaitTarget
   timeout_ms?: number
+  takeover?: boolean
 }
 
 const DEFAULT_TIMEOUT_MS = 180_000
@@ -163,6 +165,7 @@ export async function doStart(
     save: save ?? undefined,
     logArchive: archive,
     modlogOffset,
+    launchedBy: SESSION,
   })
   if (!fields.steam_running) fields.hint = 'Steam не был запущен: старт займёт дольше, возможен экран логина'
 
@@ -244,7 +247,7 @@ export async function handleGameProcess(
     if (typeof state.modlogOffset === 'number') fields.modlog_offset = state.modlogOffset
     if (proc) {
       fields.status = 'running'
-      Object.assign(fields, procFields(proc), await bridgeFields(config))
+      Object.assign(fields, procFields(proc), await bridgeFields(config), gameOwnership(config).fields)
       if (fields.bridge === 'not_responding') {
         fields.hint = 'процесс жив, но мост молчит: UE4SS ещё грузится, либо WWBridge не включён в mods.txt'
       }
@@ -259,6 +262,16 @@ export async function handleGameProcess(
       fields.latest_save_at = latest.savedAt
     }
     return renderAiText({ reportType: 'game_process', fields })
+  }
+
+  if ((action === 'stop' || action === 'restart') && args.takeover !== true) {
+    const own = gameOwnership(config)
+    if (own.conflict !== 'none') {
+      return renderAiText({
+        reportType: 'game_process',
+        fields: { ...fields, status: own.conflict === 'external' ? 'not_ours' : 'owned_by_other_session', ...own.fields, hint: ownershipHint(own) },
+      })
+    }
   }
 
   if (action === 'stop') {

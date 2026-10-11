@@ -4,6 +4,7 @@ import { ServerConfig } from '../config'
 import { BridgeClient } from './bridge-client'
 import { modlogPath } from './kit'
 import { isLevelLoaded } from '../tools/bridge-common'
+import type { SessionInfo } from './session-id'
 
 export interface ProcInfo {
   pid: number
@@ -19,6 +20,7 @@ export interface ProcessState {
   save?: string
   logArchive?: string
   modlogOffset?: number
+  launchedBy?: SessionInfo
 }
 
 export type WaitTarget = 'none' | 'process' | 'bridge' | 'menu' | 'world'

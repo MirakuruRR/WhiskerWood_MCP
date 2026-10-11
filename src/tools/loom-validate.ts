@@ -132,7 +132,7 @@ function findProjectRoot(from: string, fallback: string): string {
   return fallback
 }
 
-function translateCheckError(message: string): string {
+export function translateCheckError(message: string): string {
   for (const t of CHECK_TRANSLATIONS) {
     const m = t.re.exec(message)
     if (m) return t.text(m)
@@ -663,9 +663,47 @@ function collectPitfalls(lm: LmSource, pitfalls: PitfallHint[]): PitfallHit[] {
   return out
 }
 
-function checkMissing(ctx: GameContext | null, names: string[], out: Finding[]): void {
+function ownDeclarations(parsed: LmSource[]): Map<string, { file: string; kind: string }> {
+  const out = new Map<string, { file: string; kind: string }>()
+  for (const lm of parsed) {
+    for (const h of lm.headers) {
+      const at = { file: lm.rel, kind: h.kind }
+      out.set(h.name, at)
+      if (h.assetPath) {
+        out.set(h.assetPath, at)
+        out.set(h.assetPath.split('/').pop() ?? h.name, at)
+      }
+    }
+  }
+  return out
+}
+
+function checkMissing(ctx: GameContext | null, names: string[], own: Map<string, { file: string; kind: string }>, out: Finding[]): void {
   for (const name of names) {
     const short = name.startsWith('/') ? (name.split(/[./]/).pop() ?? name) : name
+    const decl = own.get(name) ?? own.get(name.replace(/\.[^./]+$/, '')) ?? own.get(short) ?? own.get(short.replace(/_C$/, ''))
+    if (decl) {
+      out.push({
+        file: decl.file,
+        line: 0,
+        column: 0,
+        severity: 'info',
+        code: 'check_missing_own',
+        message: `${name}: ${decl.kind} этого мода — в types.json кита он появится после первой сборки, это не ошибка`,
+      })
+      continue
+    }
+    if (/^[a-z][a-z0-9_]*$/.test(short)) {
+      out.push({
+        file: '',
+        line: 0,
+        column: 0,
+        severity: 'info',
+        code: 'check_missing_builtin',
+        message: `${name}: встроенное имя Loom (функция или тип языка), а не класс игры — в types.json его нет, это не ошибка`,
+      })
+      continue
+    }
     if (ctx) {
       const classes = findByShortName(ctx, short, 1)
       const pkg = ctx.db.query("SELECT path FROM objects WHERE name = ? AND kind = 'Package' LIMIT 1").get(short) as
@@ -913,7 +951,7 @@ export async function handleLoomValidate(config: ServerConfig, args: LoomValidat
           extra: { loom: err.message },
         })
       }
-      if (missing.length > 0) checkMissing(ctx, missing, findings)
+      if (missing.length > 0) checkMissing(ctx, missing, ownDeclarations(parsed), findings)
       const otherErrors = (json.errors ?? []).length - ours.length
       checkStatus = added > 0 ? 'errors' : 'ok'
       checkSummary = json.ok

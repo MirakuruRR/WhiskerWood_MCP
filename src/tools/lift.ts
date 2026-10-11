@@ -298,7 +298,7 @@ interface CodeHitRow {
   text: string
 }
 
-/** Поиск по поднятому коду игры: FTS по телам функций, строка и сниппет берутся из самого .lm. */
+/** Поиск по коду игры: FTS по поднятым телам, подстрока там же и подстрока в дизасме байткода — застабленные тела и строковые константы есть только в нём. */
 function handleCodePattern(ctx: GameContext, pattern: string, limit?: number): string {
   const echo = versionEchoFields(ctx)
   const fail = (status: string, extra: Record<string, string | number | boolean> = {}) =>
@@ -306,43 +306,44 @@ function handleCodePattern(ctx: GameContext, pattern: string, limit?: number): s
 
   const fts = buildFtsQuery(pattern)
   const tokens = tokenizePattern(pattern)
-  if (!fts || tokens.length === 0) return fail('error', { error: 'пустой запрос' })
-
-  const table = ctx.db
-    .query("SELECT name FROM sqlite_master WHERE name = 'code_fts' AND type = 'table'")
-    .get() as { name: string } | null
-  if (!table) {
-    return fail('no_code_index', {
-      hint: 'в этом профиле нет поиска по коду игры: таблицы подъёма наполняет шаг сборки профиля (bun run setup), а этот профиль собран до его появления. Без мод-кита шаг пропускается, и поиск по коду недоступен.',
-    })
-  }
-
-  const status = ctx.db.query("SELECT value FROM profile_meta WHERE key = 'lift_status'").get() as { value: string } | null
-  const functions = ctx.db.query("SELECT value FROM profile_meta WHERE key = 'lift_functions'").get() as
-    | { value: string }
-    | null
-  if ((functions?.value ?? '0') === '0') {
-    const reason = ctx.db.query("SELECT value FROM profile_meta WHERE key = 'lift_skip_reason'").get() as
-      | { value: string }
-      | null
-    return fail('no_code_index', {
-      lift_status: status?.value ?? 'нет',
-      ...(reason?.value ? { lift_skip_reason: reason.value } : {}),
-      hint: 'код игры не поднят: пустой индекс подъёма. Причину смотри в profile_meta (lift_skip_reason, lift_last_error)',
-    })
-  }
+  const needle = pattern.trim().toLowerCase()
+  if (needle.length < 3) return fail('error', { error: 'запрос короче трёх символов' })
 
   const max = Math.min(Math.max(limit ?? FTS_LIMIT, 1), MAX_RESULTS)
-  const rows = ctx.db
-    .query(
-      `SELECT c.function_path, c.name, c.kind, c.asset_path, c.file, c.line_from, c.line_to, c.stub, c.text
-       FROM code_fts f JOIN code_functions c ON c.rowid = f.rowid
-       WHERE code_fts MATCH ?
-       ORDER BY bm25(code_fts, 8.0, 4.0, 1.0)
-       LIMIT ?`,
-    )
-    .all(fts, max) as CodeHitRow[]
-  const total = (ctx.db.query('SELECT COUNT(*) c FROM code_fts WHERE code_fts MATCH ?').get(fts) as { c: number }).c
+  const hasCode = ctx.db.query("SELECT name FROM sqlite_master WHERE name = 'code_fts' AND type = 'table'").get() !== null
+  const liftStatus = hasCode
+    ? ((ctx.db.query("SELECT value FROM profile_meta WHERE key = 'lift_status'").get() as { value: string } | null)?.value ?? 'нет')
+    : 'нет'
+  const functions = hasCode
+    ? ((ctx.db.query("SELECT value FROM profile_meta WHERE key = 'lift_functions'").get() as { value: string } | null)?.value ?? '0')
+    : '0'
+  const codeReady = hasCode && functions !== '0'
+
+  const codeCols = 'c.rowid AS rid, c.function_path, c.name, c.kind, c.asset_path, c.file, c.line_from, c.line_to, c.stub, c.text'
+  const codeRows: Array<CodeHitRow & { rid: number; via: string }> = []
+  let codeTotal = 0
+  if (codeReady && fts && tokens.length > 0) {
+    const rows = ctx.db
+      .query(
+        `SELECT ${codeCols} FROM code_fts f JOIN code_functions c ON c.rowid = f.rowid
+         WHERE code_fts MATCH ? ORDER BY bm25(code_fts, 8.0, 4.0, 1.0) LIMIT ?`,
+      )
+      .all(fts, max) as Array<CodeHitRow & { rid: number }>
+    codeRows.push(...rows.map((r) => ({ ...r, via: 'fts' })))
+    codeTotal = (ctx.db.query('SELECT COUNT(*) c FROM code_fts WHERE code_fts MATCH ?').get(fts) as { c: number }).c
+  }
+  if (codeReady && codeRows.length < max) {
+    const seen = codeRows.map((r) => r.rid)
+    const rows = ctx.db
+      .query(
+        `SELECT ${codeCols} FROM code_functions c
+         WHERE instr(lower(c.text), ?) > 0${seen.length > 0 ? ` AND c.rowid NOT IN (${seen.join(',')})` : ''} LIMIT ?`,
+      )
+      .all(needle, max - codeRows.length) as Array<CodeHitRow & { rid: number }>
+    codeRows.push(...rows.map((r) => ({ ...r, via: 'substring' })))
+    const substringTotal = (ctx.db.query('SELECT COUNT(*) c FROM code_functions WHERE instr(lower(text), ?) > 0').get(needle) as { c: number }).c
+    codeTotal = Math.max(codeTotal, substringTotal)
+  }
 
   const cache = new Map<string, string[]>()
   const linesOf = (file: string): string[] => {
@@ -358,11 +359,11 @@ function handleCodePattern(ctx: GameContext, pattern: string, limit?: number): s
     return lines
   }
 
-  const results: AiTextResult[] = rows.map((row) => {
+  const results: AiTextResult[] = codeRows.map((row) => {
     const lines = linesOf(row.file)
     const from = Math.max(1, row.line_from)
     const to = Math.min(lines.length > 0 ? lines.length : row.line_to, row.line_to)
-    const at = firstMatchLine(lines, tokens, from, to)
+    const at = firstMatchLine(lines, tokens.length > 0 ? tokens : [needle], from, to)
     const snippetFrom = Math.max(from, at - SNIPPET_CONTEXT)
     const snippetTo = Math.min(to, at + SNIPPET_CONTEXT)
     const snippet = lines
@@ -371,6 +372,7 @@ function handleCodePattern(ctx: GameContext, pattern: string, limit?: number): s
       .join('\n')
     return {
       fields: {
+        source: row.via === 'fts' ? 'code' : 'code_substring',
         function: row.function_path,
         kind: row.kind,
         line: at,
@@ -384,23 +386,78 @@ function handleCodePattern(ctx: GameContext, pattern: string, limit?: number): s
     }
   })
 
+  const codeFunctions = new Set(codeRows.map((r) => functionKey(r.function_path)))
+  const bytecodeTotal = (
+    ctx.db.query('SELECT COUNT(*) c FROM function_bytecode WHERE instr(lower(disasm), ?) > 0').get(needle) as { c: number }
+  ).c
+  const room = Math.max(max - results.length, Math.min(max, 5))
+  const bytecodeRows = ctx.db
+    .query('SELECT function_path, disasm FROM function_bytecode WHERE instr(lower(disasm), ?) > 0 LIMIT ?')
+    .all(needle, room + codeFunctions.size) as Array<{ function_path: string; disasm: string }>
+  let bytecodeShown = 0
+  for (const row of bytecodeRows) {
+    if (bytecodeShown >= room) break
+    if (codeFunctions.has(functionKey(row.function_path))) continue
+    const hits = bytecodeHits(row.disasm, needle)
+    if (hits.length === 0) continue
+    bytecodeShown++
+    results.push({
+      fields: {
+        source: 'bytecode',
+        function: row.function_path,
+        entry: hits[0].entry,
+        next: `ww_get_bytecode function_path=${row.function_path} entry=${hits[0].entry}`,
+      },
+      blocks: { lines: hits.map((h) => `[entry ${h.entry}] ${h.line}`).join('\n') },
+    })
+  }
+
+  if (results.length === 0) {
+    return fail('not_found', {
+      code_index: codeReady ? `поднято функций ${functions}, lift_status ${liftStatus}` : 'нет: в профиле не поднят код игры',
+      hint: 'ни в поднятом коде, ни в байткоде подстроки нет. Строки баланса и тексты ищи в ww_get_datatable и ww_resolve_loc, символы — в ww_find_symbol',
+    })
+  }
+
   return renderAiText({
     reportType: 'code_search',
     fields: {
       ...echo,
       status: 'ok',
       query: pattern,
-      fts_query: fts,
-      functions_indexed: functions?.value ?? '0',
-      lift_status: status?.value ?? 'нет',
-      truncated: total > rows.length,
-      hint: 'полное тело функции поднимает ww_lift asset_path=<asset_path>, байткод — ww_get_bytecode',
+      ...(fts ? { fts_query: fts } : {}),
+      code_hits: codeTotal,
+      bytecode_hits: bytecodeTotal,
+      functions_indexed: functions,
+      lift_status: liftStatus,
+      hint: 'source=code — поднятый .lm (полное тело: ww_lift asset_path=<asset_path>); source=bytecode — строка дизасма: тело застаблено при подъёме или это константа, читать с указанного entry',
     },
     results,
-    truncated: total > rows.length,
-    totalFound: total,
+    truncated: codeTotal + bytecodeTotal > results.length,
+    totalFound: codeTotal + bytecodeTotal,
     limit: max,
   })
+}
+
+/** Индекс пишет путь как Asset.Class_C.Fn, подъём — как /Game/.../Asset.Class_C:Fn: сравниваем по Class_C:Fn. */
+function functionKey(path: string): string {
+  const parts = (path.split('/').pop() ?? path).split(/[.:]/)
+  return parts.slice(-2).join(':').toLowerCase()
+}
+
+/** Строки дизасма с подстрокой и StatementIndex их верхнеуровневого выражения — точка входа для ww_get_bytecode. */
+function bytecodeHits(disasm: string, needle: string): Array<{ entry: number; line: string }> {
+  const out: Array<{ entry: number; line: string }> = []
+  let entry = 0
+  for (const line of disasm.split('\n')) {
+    const top = /^\[\d+\] \S+[^\n]*StatementIndex=(\d+)/.exec(line)
+    if (top) entry = Number(top[1])
+    if (line.toLowerCase().includes(needle)) {
+      out.push({ entry, line: line.trim().slice(0, SNIPPET_LINE_MAX) })
+      if (out.length >= 3) break
+    }
+  }
+  return out
 }
 
 function firstMatchLine(lines: string[], tokens: string[], from: number, to: number): number {
@@ -499,6 +556,11 @@ function renderLift(input: RenderInput): string {
       defaults_dropped: droppedDefaults,
       component_fields_dropped: droppedFields,
       widget_tree: widgetTree ? 'dropped' : 'lifted',
+      ...(input.className
+        ? {
+            defaults_from: `значения по умолчанию из cooked-ассета = CDO игры; живой CDO — StaticFindObject("${input.target.assetPath}.Default__${input.className}") в ww_game_eval`,
+          }
+        : {}),
       hex_keys_dropped: input.stats.hexKeys,
       tiny_floats_zeroed: input.stats.tinyFloats,
       iterations: input.iterations,
